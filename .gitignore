@@ -1,0 +1,4 @@
+openwrt/
+firmware-output/
+*.zip
+.DS_Store

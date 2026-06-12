@@ -1,0 +1,23 @@
+source:
+  repo: ""
+  branch: ""
+
+target:
+  arch: ""
+  subtarget: ""
+  device: ""
+
+feeds:
+  # 示例：
+  # - name: passwall
+  #   url: https://github.com/xiaorouji/openwrt-passwall
+  #   branch: main
+
+build:
+  language: zh-cn
+  rootfs_size_mb: "512"
+  grub_timeout: "3"
+  use_ccache: true
+
+upload:
+  webdav_path: /openwrt
