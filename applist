@@ -1,5 +1,13 @@
 # 当 config/.config 不存在时，本文件用于追加需要安装的软件包。
-# 一行一个 OpenWrt 软件包名，例如：
-# luci-app-ttyd
-# luci-app-upnp
-# curl
+# 一行一个 OpenWrt 软件包名
+luci-ssl-openssl
+luci-app-diskman
+luci-app-filemanager
+luci-app-ttyd
+nano
+coremark
+htop
+qemu-ga
+unzip
+7z
+luci-app-nikki
