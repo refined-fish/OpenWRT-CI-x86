@@ -1,17 +1,16 @@
 source:
-  repo: ""
-  branch: ""
+  repo: "https://github.com/immortalwrt/immortalwrt"
+  branch: "openwrt-25.12"
 
 target:
-  arch: ""
-  subtarget: ""
-  device: ""
+  arch: "x86"
+  subtarget: "64"
+  device: "generic"
 
 feeds:
-  # 示例：
-  # - name: passwall
-  #   url: https://github.com/xiaorouji/openwrt-passwall
-  #   branch: main
+  - name: nikki
+    url: https://github.com/nikkinikki-org/OpenWrt-nikki
+    branch: main
 
 build:
   language: zh-cn
