@@ -10,6 +10,10 @@ set -euo pipefail
 CONFIG_FILE="$WORKSPACE_DIR/config/.config"
 TARGET_CONFIG="$OPENWRT_DIR/.config"
 
+openwrt_make() {
+  env -u TARGET_ARCH make "$@"
+}
+
 cd "$OPENWRT_DIR"
 
 if [ -f "$CONFIG_FILE" ]; then
@@ -61,7 +65,7 @@ echo "Generated seed .config:"
 sed -n '1,120p' "$TARGET_CONFIG"
 
 rm -f scripts/config/conf scripts/config/mconf scripts/config/nconf || true
-if ! make defconfig; then
+if ! openwrt_make defconfig; then
   echo "make defconfig failed; retrying with single-thread verbose output"
-  make -j1 V=s defconfig
+  openwrt_make -j1 V=s defconfig
 fi

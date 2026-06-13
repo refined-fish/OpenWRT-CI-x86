@@ -5,6 +5,10 @@ set -euo pipefail
 
 cd "$OPENWRT_DIR"
 
+openwrt_make() {
+  env -u TARGET_ARCH make "$@"
+}
+
 print_machine_info() {
   echo "======================="
   lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core' || true
@@ -25,14 +29,14 @@ if [ "${USE_CCACHE:-true}" = "true" ]; then
 fi
 
 print_machine_info
-make defconfig
-make download -j8 V=s
+openwrt_make defconfig
+openwrt_make download -j8 V=s
 
 THREADS="$(nproc)"
 echo "Building with $THREADS threads"
-if ! make -j"$THREADS"; then
+if ! openwrt_make -j"$THREADS"; then
   echo "Parallel build failed; retrying with single thread and verbose log"
-  make -j1 V=s
+  openwrt_make -j1 V=s
 fi
 
 if [ "${USE_CCACHE:-true}" = "true" ]; then
