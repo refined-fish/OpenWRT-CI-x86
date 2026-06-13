@@ -31,6 +31,8 @@ is_firmware() {
 }
 
 count=0
+manifest_file="$OUTPUT_DIR/firmware-list.txt"
+: > "$manifest_file"
 while IFS= read -r -d '' file; do
   name="$(basename "$file")"
   if is_blocked "$name"; then
@@ -39,16 +41,31 @@ while IFS= read -r -d '' file; do
   fi
   if is_firmware "$name"; then
     cp -f "$file" "$OUTPUT_DIR/"
+    size="$(du -h "$file" | cut -f 1)"
+    printf '%s\t%s\n' "$size" "$name" >> "$manifest_file"
     echo "Selected firmware: $name"
     count=$((count + 1))
   else
     echo "Skip unmatched file: $name"
   fi
-done < <(find "$TARGETS_DIR" -type f -print0)
+done < <(find "$TARGETS_DIR" -maxdepth 5 -type f -print0)
+
+if [ -f "$OPENWRT_DIR/.config" ]; then
+  cp -f "$OPENWRT_DIR/.config" "$OUTPUT_DIR/build.config"
+fi
+
+{
+  echo "source_repo=${SOURCE_REPO:-}"
+  echo "source_branch=${SOURCE_BRANCH:-}"
+  echo "target_arch=${TARGET_ARCH:-}"
+  echo "target_subtarget=${TARGET_SUBTARGET:-}"
+  echo "target_device=${TARGET_DEVICE:-}"
+  echo "build_time=$(date '+%Y-%m-%d %H:%M:%S %Z')"
+} > "$OUTPUT_DIR/build-info.txt"
 
 if [ "$count" -eq 0 ]; then
   echo "No release firmware selected"
-  find "$TARGETS_DIR" -type f -maxdepth 5 | sort
+  find "$TARGETS_DIR" -maxdepth 5 -type f | sort
   exit 1
 fi
 

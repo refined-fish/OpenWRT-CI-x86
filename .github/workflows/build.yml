@@ -42,17 +42,17 @@ jobs:
       - name: Install OpenWrt build dependencies
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-            bzip2 ccache clang cmake cpio curl device-tree-compiler fastjar flex gawk gettext \
-            gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 \
-            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
-            libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
-            libtool lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf \
-            python3 python3-pip python3-ply python3-docutils qemu-utils rsync scons squashfs-tools \
-            subversion swig texinfo uglifyjs unzip upx-ucl vim wget xmlto xxd zlib1g-dev
+          sudo -E apt-get update
+          sudo -E apt-get install -y dos2unix libfuse-dev python3 python3-pip python3-yaml ccache curl git jq qemu-utils unzip zip
+          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
           python3 -m pip install --user pyyaml
+          sudo -E timedatectl set-timezone "Asia/Shanghai"
+
+      - name: Normalize scripts
+        shell: bash
+        run: |
+          find scripts -type f -name '*.sh' -exec dos2unix {} \;
+          find scripts -type f -name '*.sh' -exec chmod +x {} \;
 
       - name: Enable swap
         shell: bash
@@ -84,6 +84,33 @@ jobs:
           restore-keys: |
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ env.TARGET_SUBTARGET }}-
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
+
+      - name: Cache toolchain
+        if: env.CLEAN_CACHE != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.OPENWRT_DIR }}/staging_dir/host*
+            ${{ env.OPENWRT_DIR }}/staging_dir/tool*
+          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ env.TARGET_SUBTARGET }}-${{ hashFiles('config.yaml', 'applist', 'config/.config') }}
+          restore-keys: |
+            openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ env.TARGET_SUBTARGET }}-
+            openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
+
+      - name: Refresh restored toolchain cache
+        if: env.CLEAN_CACHE != 'true'
+        shell: bash
+        run: |
+          if [ -d "$OPENWRT_DIR/staging_dir" ]; then
+            find "$OPENWRT_DIR/staging_dir" -type d -name stamp -not -path '*/target-*' -print0 | while IFS= read -r -d '' dir; do
+              find "$dir" -type f -exec touch {} +
+            done
+            mkdir -p "$OPENWRT_DIR/tmp"
+            echo 1 > "$OPENWRT_DIR/tmp/.build"
+            echo "Toolchain cache refreshed"
+          else
+            echo "No restored toolchain cache found"
+          fi
 
       - name: Cache ccache
         if: env.CLEAN_CACHE != 'true' && env.USE_CCACHE == 'true'
@@ -129,6 +156,20 @@ jobs:
 
       - name: Upload firmware to WebDAV
         if: env.UPLOAD_WEBDAV == 'true'
+        id: upload_webdav
+        continue-on-error: true
         shell: bash
         run: |
           bash scripts/upload_webdav.sh
+
+      - name: Report WebDAV fallback
+        if: env.UPLOAD_WEBDAV == 'true' && steps.upload_webdav.outcome == 'failure'
+        shell: bash
+        run: |
+          {
+            echo "## WebDAV upload failed"
+            echo
+            echo "Firmware artifact has already been uploaded by GitHub Actions."
+            echo "Use the artifact named openwrt-${TARGET_ARCH}-${TARGET_SUBTARGET}-${TARGET_DEVICE}-${GITHUB_RUN_NUMBER} as fallback."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::WebDAV upload failed; GitHub Actions artifact is available as fallback."

@@ -14,11 +14,25 @@ if [ -z "$FILES_URL" ]; then
 fi
 
 TMP_ZIP="$(mktemp)"
+TMP_DIR="$(mktemp -d)"
+cleanup() {
+  rm -f "$TMP_ZIP"
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
+
 echo "Downloading files.zip"
 curl -fL --retry 3 --connect-timeout 20 "$FILES_URL" -o "$TMP_ZIP"
+unzip -tq "$TMP_ZIP"
+unzip -oq "$TMP_ZIP" -d "$TMP_DIR"
 
 mkdir -p "$OPENWRT_DIR/files"
-unzip -o "$TMP_ZIP" -d "$OPENWRT_DIR"
-rm -f "$TMP_ZIP"
+if [ -d "$TMP_DIR/files" ]; then
+  echo "Detected files/ directory in archive"
+  cp -a "$TMP_DIR/files/." "$OPENWRT_DIR/files/"
+else
+  echo "Archive does not contain top-level files/ directory; treating archive root as files/ content"
+  cp -a "$TMP_DIR/." "$OPENWRT_DIR/files/"
+fi
 
-echo "Custom files applied"
+echo "Custom files applied to $OPENWRT_DIR/files"

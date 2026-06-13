@@ -27,7 +27,8 @@ urlencode_path() {
   python3 - "$1" <<'PY'
 from urllib.parse import quote
 import sys
-print('/'.join(quote(part) for part in sys.argv[1].strip('/').split('/')))
+parts = [quote(part, safe='') for part in sys.argv[1].strip('/').split('/') if part]
+print('/'.join(parts))
 PY
 }
 
@@ -39,23 +40,37 @@ mkdir_webdav_dir() {
     [ -z "$part" ] && continue
     current="$current/$part"
     encoded="$(urlencode_path "$current")"
-    curl -fsS -u "$WEBDAV_USERNAME:$WEBDAV_PASSWORD" -X MKCOL "$base_url/$encoded" || true
+    curl -fsS --retry 3 -u "$WEBDAV_USERNAME:$WEBDAV_PASSWORD" -X MKCOL "$base_url/$encoded" || true
   done
 }
 
 mkdir_webdav_dir "$remote_dir"
+encoded_dir="$(urlencode_path "$remote_dir")"
+failures=0
+uploaded=0
 
 shopt -s nullglob
 for file in "$OUTPUT_DIR"/*; do
+  [ -f "$file" ] || continue
   name="$(basename "$file")"
-  encoded_dir="$(urlencode_path "$remote_dir")"
-  encoded_name="$(python3 - <<PY
-from urllib.parse import quote
-print(quote('$name'))
-PY
-)"
+  encoded_name="$(urlencode_path "$name")"
   echo "Uploading $name"
-  curl -fS --retry 3 -u "$WEBDAV_USERNAME:$WEBDAV_PASSWORD" -T "$file" "$base_url/$encoded_dir/$encoded_name"
+  if curl -fS --retry 3 -u "$WEBDAV_USERNAME:$WEBDAV_PASSWORD" -T "$file" "$base_url/$encoded_dir/$encoded_name"; then
+    uploaded=$((uploaded + 1))
+  else
+    echo "Failed to upload $name"
+    failures=$((failures + 1))
+  fi
 done
 
-echo "Uploaded firmware to WebDAV: $remote_dir"
+if [ "$uploaded" -eq 0 ]; then
+  echo "No files uploaded to WebDAV"
+  exit 1
+fi
+
+if [ "$failures" -gt 0 ]; then
+  echo "$failures file(s) failed to upload to WebDAV"
+  exit 1
+fi
+
+echo "Uploaded $uploaded file(s) to WebDAV: $remote_dir"

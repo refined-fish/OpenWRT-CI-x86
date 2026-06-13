@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Parse config.yaml and emit GitHub Actions environment variables."""
 import re
 import sys
 from pathlib import Path
@@ -7,19 +8,34 @@ import yaml
 
 
 def require(value, name):
+    """Raises SystemExit if value is missing or empty."""
     if value is None or str(value).strip() == "":
         raise SystemExit(f"Missing required config value: {name}")
     return str(value).strip()
 
 
 def env_escape(value):
+    """Safe encoding for $GITHUB_ENV: no newlines, no leading/trailing whitespace."""
     return str(value).replace("\n", " ").strip()
 
 
 def slugify(value):
+    """Turn a repo URL into a filesystem-safe key segment."""
     value = re.sub(r"^https?://", "", value)
     value = re.sub(r"\.git$", "", value)
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-")
+
+
+def parse_bool(raw, default=False):
+    """Accept 1/true/yes/on (case-insensitive) as True."""
+    value = default if raw is None else raw
+    return str(value).lower() in ("1", "true", "yes", "on")
+
+
+def normalize(target_arch):
+    """Normalise target arch so x86/x86_64 are handled consistently downstream."""
+    mapping = {"x86": "x86"}
+    return mapping.get(target_arch, target_arch)
 
 
 def main():
@@ -30,7 +46,7 @@ def main():
     env_path = Path(sys.argv[2])
 
     if not config_path.exists():
-        raise SystemExit("config.yaml not found")
+        raise SystemExit(f"{config_path} not found")
 
     data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 
@@ -48,14 +64,14 @@ def main():
     language = str(build.get("language") or "zh-cn").strip()
     rootfs_size_mb = str(build.get("rootfs_size_mb") or "").strip()
     grub_timeout = str(build.get("grub_timeout") or "").strip()
-    use_ccache = str(build.get("use_ccache", True)).lower() in ("1", "true", "yes", "on")
+    use_ccache = parse_bool(build.get("use_ccache"), True)
     webdav_path = str(upload.get("webdav_path") or "/openwrt").strip()
 
     entries = {
         "SOURCE_REPO": source_repo,
         "SOURCE_BRANCH": source_branch,
         "SOURCE_REPO_SLUG": slugify(source_repo),
-        "TARGET_ARCH": target_arch,
+        "TARGET_ARCH": normalize(target_arch),
         "TARGET_SUBTARGET": target_subtarget,
         "TARGET_DEVICE": target_device,
         "BUILD_LANGUAGE": language,
@@ -65,13 +81,14 @@ def main():
         "WEBDAV_PATH": webdav_path,
     }
 
-    with env_path.open("a", encoding="utf-8") as env_file:
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    with env_path.open("a", encoding="utf-8", newline="\n") as env_file:
         for key, value in entries.items():
             env_file.write(f"{key}={env_escape(value)}\n")
 
     print("Parsed config.yaml")
-    for key in entries:
-        print(f"{key}={entries[key]}")
+    for key in sorted(entries):
+        print(f"  {key}={entries[key]}")
 
 
 if __name__ == "__main__":

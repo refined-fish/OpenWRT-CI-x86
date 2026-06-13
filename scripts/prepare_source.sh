@@ -11,3 +11,10 @@ if [ -d "$OPENWRT_DIR" ]; then
 fi
 
 git clone --depth 1 --branch "$SOURCE_BRANCH" "$SOURCE_REPO" "$OPENWRT_DIR"
+
+# Remove download mirrors that may fail on GitHub Actions runners
+PROJECT_MIRRORS_FILE="$OPENWRT_DIR/scripts/projectsmirrors.json"
+if [ -f "$PROJECT_MIRRORS_FILE" ]; then
+  sed -i '/\.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
+  echo "Removed restricted mirrors from projectsmirrors.json"
+fi
