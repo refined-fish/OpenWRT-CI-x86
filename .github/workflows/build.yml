@@ -43,7 +43,16 @@ jobs:
         shell: bash
         run: |
           sudo -E apt-get update
-          sudo -E apt-get install -y dos2unix libfuse-dev python3 python3-pip python3-yaml ccache curl git jq qemu-utils unzip zip
+          sudo -E apt-get install -y \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler dos2unix fastjar file flex \
+            gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool jq \
+            libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev \
+            libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano ninja-build \
+            p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
+            python3-yaml qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs unzip upx-ucl vim wget xmlto xxd zlib1g-dev zip zstd
           sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
           python3 -m pip install --user pyyaml
           sudo -E timedatectl set-timezone "Asia/Shanghai"

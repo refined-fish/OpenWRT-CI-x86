@@ -57,4 +57,11 @@ if [ "${USE_CCACHE:-true}" = "true" ]; then
   echo "CONFIG_CCACHE=y" >> "$TARGET_CONFIG"
 fi
 
-make defconfig
+echo "Generated seed .config:"
+sed -n '1,120p' "$TARGET_CONFIG"
+
+rm -f scripts/config/conf scripts/config/mconf scripts/config/nconf || true
+if ! make defconfig; then
+  echo "make defconfig failed; retrying with single-thread verbose output"
+  make -j1 V=s defconfig
+fi
