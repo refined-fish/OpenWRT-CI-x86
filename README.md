@@ -202,8 +202,12 @@ files_zip_url=https://example.com/openwrt-files/
 
 手动运行 `OpenWrt CI` 时，将 `clean_cache` 设为 `true` 可跳过已有缓存并重新编译。
 
+如果构建失败，workflow 会自动清理当前源码、分支、架构和 target 对应前缀的 `dl`、toolchain、ccache 缓存；不会清理其他架构或其他 target 的缓存。
+
 ## 故障排查
 
 - 如果日志中出现 `cc -O2 x86 -c -o conf.o conf.c` 或 `cc: error: x86: No such file or directory`，通常是 `TARGET_ARCH` 环境变量污染了 GNU make 的内置规则。本项目脚本已通过 `env -u TARGET_ARCH make ...` 规避，新增脚本中不要直接调用裸 `make`。
 - 如果目录形式的 `files_zip_url` 找不到 zip，请确认目录 listing 中能看到 `.zip` 链接；私有 WebDAV 目录需要用可匿名访问或带临时签名的 URL。
 - 如果 zip 解压后固件中路径多了一层目录，请检查 zip 首层是否已经是固件根目录内容。
+- 如果 zip 内中文文件名在 `unzip` 下出现 `mismatching "local" filename`，脚本会改用 Python 解压并自动尝试 UTF-8/GBK/CP936 文件名解码。
+- `files.zip` 解压后会自动把文本配置和脚本转换为 LF；`files/` 下所有普通文件会自动加执行权限，避免 uci-defaults、init.d、bin 等脚本权限不足。

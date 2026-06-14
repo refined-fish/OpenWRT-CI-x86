@@ -91,6 +91,7 @@ jobs:
           bash scripts/prepare_source.sh
 
       - name: Cache downloads
+        id: cache-downloads
         if: env.CLEAN_CACHE != 'true'
         uses: actions/cache@v4
         with:
@@ -102,6 +103,7 @@ jobs:
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
 
       - name: Cache toolchain
+        id: cache-toolchain
         if: env.CLEAN_CACHE != 'true'
         uses: actions/cache@v4
         with:
@@ -129,6 +131,7 @@ jobs:
           fi
 
       - name: Cache ccache
+        id: cache-ccache
         if: env.CLEAN_CACHE != 'true' && env.USE_CCACHE == 'true'
         uses: actions/cache@v4
         with:
@@ -151,6 +154,27 @@ jobs:
         shell: bash
         run: |
           bash scripts/build_openwrt.sh
+
+      - name: Clean failed same-target caches
+        if: failure() && env.CLEAN_CACHE != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefixes=(
+            "openwrt-dl-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+            "openwrt-toolchain-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+            "openwrt-ccache-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+          )
+          for prefix in "${prefixes[@]}"; do
+            echo "Checking caches with prefix: $prefix"
+            gh cache list --key "$prefix" --json id,key --jq '.[] | select(.key | startswith("'"$prefix"'")) | [.id, .key] | @tsv' | while IFS=$'\t' read -r cache_id cache_key; do
+              [ -n "$cache_id" ] || continue
+              echo "Deleting failed same-target cache: $cache_key"
+              gh cache delete "$cache_id" || true
+            done
+          done
 
       - name: Upload firmware artifact
         if: env.OUTPUT_ARTIFACT == 'true'
