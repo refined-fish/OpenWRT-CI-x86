@@ -42,3 +42,47 @@ PY
 
 ./scripts/feeds update -a
 ./scripts/feeds install -a
+
+python3 - <<'PY' > "$WORKSPACE_DIR/extra-packages.tsv"
+from pathlib import PurePosixPath
+import yaml
+
+from os import environ
+from pathlib import Path
+
+workspace = Path(environ["WORKSPACE_DIR"])
+config = yaml.safe_load((workspace / "config.yaml").read_text(encoding="utf-8")) or {}
+
+for item in config.get("extra_packages") or []:
+    if not isinstance(item, dict):
+        continue
+    name = str(item.get("name") or "").strip()
+    url = str(item.get("url") or "").strip()
+    branch = str(item.get("branch") or "").strip()
+    directory = str(item.get("dir") or "").strip().replace("\\", "/")
+    if not url or not directory:
+        raise SystemExit("extra_packages entries require url and dir")
+    path = PurePosixPath(directory)
+    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
+        raise SystemExit(f"Unsafe extra_packages dir: {directory}")
+    if not name:
+        name = path.name
+    print("\t".join([name, url, branch, directory]))
+PY
+
+if [ -s "$WORKSPACE_DIR/extra-packages.tsv" ]; then
+  while IFS=$'\t' read -r name url branch dir; do
+    [ -n "$url" ] || continue
+    dest="$OPENWRT_DIR/$dir"
+    echo "Cloning extra package $name to $dir"
+    rm -rf "$dest"
+    mkdir -p "$(dirname "$dest")"
+    clone_args=(--depth 1)
+    if [ -n "$branch" ]; then
+      clone_args+=(--branch "$branch")
+    fi
+    git clone "${clone_args[@]}" "$url" "$dest"
+  done < "$WORKSPACE_DIR/extra-packages.tsv"
+else
+  echo "No extra packages configured"
+fi

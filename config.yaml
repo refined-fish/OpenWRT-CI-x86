@@ -14,6 +14,11 @@ feeds:
     url: https://github.com/nikkinikki-org/OpenWrt-nikki
     branch: main
 
+extra_packages:
+  - name: easytier
+    url: https://github.com/EasyTier/luci-app-easytier
+    dir: package/luci-app-easytier
+
 build:
   language: zh-cn
   use_ccache: true

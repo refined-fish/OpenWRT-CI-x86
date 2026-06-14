@@ -3,20 +3,384 @@ name: OpenWrt CI
 on:
   workflow_dispatch:
     inputs:
-      files_zip_url:
-        description: 'files.zip 下载地址；可填单个 zip 或包含多个 zip 的目录；为空则使用 secrets.FILES_ZIP_URL；仍为空则跳过'
-        required: false
-        type: string
       clean_cache:
-        description: '是否跳过已有缓存并重新编译'
+        description: '跳过已有缓存并重新编译'
         required: true
         default: false
         type: boolean
 
+permissions:
+  contents: read
+  actions: write
+
+env:
+  TZ: Asia/Shanghai
+  WORKSPACE_DIR: ${{ github.workspace }}
+  OPENWRT_DIR: ${{ github.workspace }}/openwrt
+  MIN_FREE_GB: "80"
+  CLEAN_CACHE: ${{ inputs.clean_cache }}
+  FILES_ZIP_URL: ${{ secrets.FILES_ZIP_URL }}
+  WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
+  WEBDAV_USERNAME: ${{ secrets.WEBDAV_USERNAME }}
+  WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
+
 jobs:
   build:
-    uses: ./.github/workflows/build.yml
-    with:
-      files_zip_url: ${{ inputs.files_zip_url }}
-      clean_cache: ${{ inputs.clean_cache }}
-    secrets: inherit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout CI repository
+        uses: actions/checkout@v4
+
+      - name: Free disk space when needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          free_gb="$(df -BG --output=avail / | tail -n 1 | tr -dc '0-9')"
+          echo "Available disk before cleanup: ${free_gb}G"
+          if [ "$free_gb" -ge "$MIN_FREE_GB" ]; then
+            echo "Disk space is enough for this build; skip cleanup."
+            df -h
+            exit 0
+          fi
+
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
+          if [ -n "${AGENT_TOOLSDIRECTORY:-}" ]; then
+            sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
+          fi
+          if command -v docker >/dev/null 2>&1; then
+            docker system prune -af || true
+          fi
+          sudo -E apt-get -yqq autoremove --purge
+          sudo -E apt-get -yqq autoclean
+          sudo -E apt-get -yqq clean
+
+          free_after="$(df -BG --output=avail / | tail -n 1 | tr -dc '0-9')"
+          echo "Available disk after cleanup: ${free_after}G"
+          if [ "$free_after" -lt "$MIN_FREE_GB" ]; then
+            echo "::warning::Available disk is still below ${MIN_FREE_GB}G."
+          fi
+          df -h
+
+      - name: Install OpenWrt build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -E apt-get -yqq update
+          sudo -E apt-get -yqq install ca-certificates curl git dos2unix jq python3 python3-yaml zip unzip zstd qemu-utils ccache
+          curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh | sudo -E bash
+          sudo -E timedatectl set-timezone "$TZ" || true
+
+      - name: Normalize scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          find scripts -type f -name '*.sh' -exec dos2unix {} \;
+          find scripts -type f -name '*.sh' -exec chmod +x {} \;
+
+      - name: Enable swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo swapoff -a || true
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Parse config.yaml
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/parse_config.py config.yaml "$GITHUB_ENV"
+
+      - name: Validate output settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${OUTPUT_ARTIFACT:-true}" != "true" ] && [ "${OUTPUT_WEBDAV:-false}" != "true" ]; then
+            echo "At least one output method must be enabled"
+            exit 1
+          fi
+          if [ "${OUTPUT_WEBDAV:-false}" = "true" ]; then
+            if [ -z "${WEBDAV_PATH:-}" ] || [ -z "${WEBDAV_URL:-}" ] || [ -z "${WEBDAV_USERNAME:-}" ] || [ -z "${WEBDAV_PASSWORD:-}" ]; then
+              echo "output.webdav is enabled, but WEBDAV_URL/WEBDAV_USERNAME/WEBDAV_PASSWORD or upload.webdav_path is missing"
+              exit 1
+            fi
+          fi
+
+      - name: Clone OpenWrt source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/prepare_source.sh
+
+      - name: Generate cache fingerprints
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORKSPACE_DIR"
+          source_hash="$(git -C "$OPENWRT_DIR" log -1 --format='%H')"
+          echo "OpenWrt source HEAD: ${source_hash:0:12}"
+
+          {
+            echo "source_hash=$source_hash"
+            python3 <<'PY'
+import yaml
+
+cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
+for feed in cfg.get("feeds", []) or []:
+    print(f'feed: {feed.get("name", "")} {feed.get("url", "")} {feed.get("branch", "")}')
+for package in cfg.get("extra_packages", []) or []:
+    print(f'extra: {package.get("name", "")} {package.get("url", "")} {package.get("branch", "")} {package.get("dir", "")}')
+PY
+          } > .cache-fp-toolchain
+
+          cp .cache-fp-toolchain .cache-fp-dl
+          {
+            [ -f applist ] && cat applist
+            python3 <<'PY'
+import yaml
+
+cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
+build = cfg.get("build", {}) or {}
+image = cfg.get("image", {}) or {}
+for key in ("language",):
+    print(f"build.{key}={build.get(key, '')}")
+for key in (
+    "filesystems",
+    "initramfs",
+    "recovery",
+    "legacy_boot",
+    "uefi_boot",
+    "kernel_partition_mb",
+    "rootfs_size_mb",
+    "pve",
+    "vmware",
+    "hyperv",
+):
+    print(f"image.{key}={image.get(key, '')}")
+PY
+            if [ -f config/.config ]; then
+              grep -E '^CONFIG_PACKAGE_|^CONFIG_TARGET_ROOTFS_|^CONFIG_LUCI_LANG_|^CONFIG_GRUB_IMAGES|^CONFIG_EFI_IMAGES|^CONFIG_VMDK_|^CONFIG_VHDX_|^CONFIG_QCOW2_' config/.config || true
+            fi
+          } >> .cache-fp-dl
+
+          cp .cache-fp-dl .cache-fp-target
+          {
+            python3 <<'PY'
+import yaml
+
+cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
+target = cfg.get("target", {}) or {}
+for key in ("arch", "subtarget", "device", "devices"):
+    print(f"target.{key}={target.get(key, '')}")
+PY
+          } >> .cache-fp-target
+
+          echo "--- toolchain fingerprint ---"
+          cat .cache-fp-toolchain
+          echo "--- downloads fingerprint ---"
+          cat .cache-fp-dl
+          echo "--- target fingerprint ---"
+          cat .cache-fp-target
+
+      - name: Clean same-target caches on demand
+        if: env.CLEAN_CACHE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefixes=(
+            "openwrt-dl-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+            "openwrt-toolchain-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+            "openwrt-target-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+            "openwrt-ccache-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+          )
+          for prefix in "${prefixes[@]}"; do
+            echo "Deleting caches with prefix: $prefix"
+            gh cache list --key "$prefix" --json id,key --jq '.[] | select(.key | startswith("'"$prefix"'")) | [.id, .key] | @tsv' | while IFS=$'\t' read -r cache_id cache_key; do
+              [ -n "$cache_id" ] || continue
+              echo "Deleting cache: $cache_key"
+              gh cache delete "$cache_id" || true
+            done
+          done
+
+      - name: Restore downloads cache
+        id: restore-downloads
+        if: env.CLEAN_CACHE != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OPENWRT_DIR }}/dl
+          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-dl') }}
+          restore-keys: |
+            openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
+            openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
+
+      - name: Restore toolchain cache
+        id: restore-toolchain
+        if: env.CLEAN_CACHE != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.OPENWRT_DIR }}/staging_dir/host*
+            ${{ env.OPENWRT_DIR }}/staging_dir/tool*
+            ${{ env.OPENWRT_DIR }}/build_dir/host
+            ${{ env.OPENWRT_DIR }}/build_dir/toolchain-*
+          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-toolchain') }}
+          restore-keys: |
+            openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
+            openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
+
+      - name: Restore target build cache
+        id: restore-target
+        if: env.CLEAN_CACHE != 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.OPENWRT_DIR }}/staging_dir/target-*
+            ${{ env.OPENWRT_DIR }}/build_dir/target-*
+          key: openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-target') }}
+          restore-keys: |
+            openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
+            openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
+
+      - name: Restore ccache
+        id: restore-ccache
+        if: env.CLEAN_CACHE != 'true' && env.USE_CCACHE == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OPENWRT_DIR }}/.ccache
+          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}
+          restore-keys: |
+            openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
+
+      - name: Refresh restored toolchain cache
+        if: env.CLEAN_CACHE != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d "$OPENWRT_DIR/staging_dir" ]; then
+            find "$OPENWRT_DIR/staging_dir" -type d -name stamp -not -path '*/target-*' -print0 | while IFS= read -r -d '' dir; do
+              find "$dir" -type f -exec touch {} +
+            done
+            mkdir -p "$OPENWRT_DIR/tmp"
+            echo 1 > "$OPENWRT_DIR/tmp/.build"
+            echo "Restored build cache refreshed"
+          else
+            echo "No restored build cache found"
+          fi
+
+      - name: Prepare feeds and extra packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/prepare_feeds.sh
+
+      - name: Prepare .config
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/prepare_config.sh
+
+      - name: Build OpenWrt
+        id: build_openwrt
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build_openwrt.sh
+
+      - name: Save downloads cache
+        if: success() && steps.restore-downloads.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.OPENWRT_DIR }}/dl
+          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-dl') }}
+
+      - name: Save toolchain cache
+        if: success() && steps.restore-toolchain.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.OPENWRT_DIR }}/staging_dir/host*
+            ${{ env.OPENWRT_DIR }}/staging_dir/tool*
+            ${{ env.OPENWRT_DIR }}/build_dir/host
+            ${{ env.OPENWRT_DIR }}/build_dir/toolchain-*
+          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-toolchain') }}
+
+      - name: Save target build cache
+        if: success() && steps.restore-target.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.OPENWRT_DIR }}/staging_dir/target-*
+            ${{ env.OPENWRT_DIR }}/build_dir/target-*
+          key: openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-target') }}
+
+      - name: Save ccache
+        if: success() && env.USE_CCACHE == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.OPENWRT_DIR }}/.ccache
+          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}
+
+      - name: Clean failed same-target caches
+        if: failure() && steps.build_openwrt.outcome == 'failure' && env.CLEAN_CACHE != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefixes=(
+            "openwrt-dl-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+            "openwrt-toolchain-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+            "openwrt-target-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+            "openwrt-ccache-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+          )
+          for prefix in "${prefixes[@]}"; do
+            echo "Checking caches with prefix: $prefix"
+            gh cache list --key "$prefix" --json id,key --jq '.[] | select(.key | startswith("'"$prefix"'")) | [.id, .key] | @tsv' | while IFS=$'\t' read -r cache_id cache_key; do
+              [ -n "$cache_id" ] || continue
+              echo "Deleting failed same-target cache: $cache_key"
+              gh cache delete "$cache_id" || true
+            done
+          done
+
+      - name: Upload firmware artifact
+        if: env.OUTPUT_ARTIFACT == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-${{ env.TARGET_SLUG }}-${{ github.run_number }}
+          path: firmware-output/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload firmware to WebDAV
+        if: env.OUTPUT_WEBDAV == 'true'
+        id: upload_webdav
+        continue-on-error: ${{ env.OUTPUT_ARTIFACT == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/upload_webdav.sh
+
+      - name: Report WebDAV fallback
+        if: env.OUTPUT_WEBDAV == 'true' && env.OUTPUT_ARTIFACT == 'true' && steps.upload_webdav.outcome == 'failure'
+        shell: bash
+        run: |
+          {
+            echo "## WebDAV upload failed"
+            echo
+            echo "Firmware artifact has already been uploaded by GitHub Actions."
+            echo "Use the artifact named openwrt-${TARGET_SLUG}-${GITHUB_RUN_NUMBER} as fallback."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::WebDAV upload failed; GitHub Actions artifact is available as fallback."

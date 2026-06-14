@@ -29,11 +29,7 @@ python_cmd() {
 }
 
 files_url() {
-  local url="${FILES_ZIP_URL_INPUT:-}"
-  if [ -z "$url" ]; then
-    url="${FILES_ZIP_URL_SECRET:-}"
-  fi
-  printf '%s' "$url"
+  printf '%s' "${FILES_ZIP_URL:-}"
 }
 
 safe_variant_name() {
