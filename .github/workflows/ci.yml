@@ -1,5 +1,7 @@
 name: OpenWrt CI
 
+run-name: OpenWrt CI
+
 on:
   workflow_dispatch:
     inputs:
@@ -15,18 +17,19 @@ permissions:
 
 env:
   TZ: Asia/Shanghai
-  WORKSPACE_DIR: ${{ github.workspace }}
-  OPENWRT_DIR: ${{ github.workspace }}/openwrt
   MIN_FREE_GB: "80"
-  CLEAN_CACHE: ${{ inputs.clean_cache }}
-  FILES_ZIP_URL: ${{ secrets.FILES_ZIP_URL }}
-  WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
-  WEBDAV_USERNAME: ${{ secrets.WEBDAV_USERNAME }}
-  WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      WORKSPACE_DIR: ${{ github.workspace }}
+      OPENWRT_DIR: ${{ github.workspace }}/openwrt
+      CLEAN_CACHE: ${{ inputs.clean_cache }}
+      FILES_ZIP_URL: ${{ secrets.FILES_ZIP_URL }}
+      WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
+      WEBDAV_USERNAME: ${{ secrets.WEBDAV_USERNAME }}
+      WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
 
     steps:
       - name: Checkout CI repository
