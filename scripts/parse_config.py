@@ -124,6 +124,9 @@ def main():
         raise SystemExit("upload.webdav_path is required when output.webdav is true")
     if not webdav_path:
         webdav_path = "/openwrt"
+    webdav_upload_mode = str(upload.get("webdav_mode") or "bundle").strip()
+    if webdav_upload_mode not in ("bundle", "direct"):
+        raise SystemExit(f"upload.webdav_mode must be 'bundle' or 'direct', got: {webdav_upload_mode}")
 
     target_slug = slugify(f"{target_arch}-{target_subtarget}-{target_device_slug}")
 
@@ -158,6 +161,7 @@ def main():
         "OUTPUT_ARTIFACT": "true" if output_artifact else "false",
         "OUTPUT_WEBDAV": "true" if output_webdav else "false",
         "WEBDAV_PATH": webdav_path,
+        "WEBDAV_UPLOAD_MODE": webdav_upload_mode,
     }
 
     env_path.parent.mkdir(parents=True, exist_ok=True)

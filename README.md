@@ -99,7 +99,11 @@ output:
 
 upload:
   webdav_path: /openwrt
+  webdav_mode: bundle     # bundle=打包成单个 tar.zst 上传，direct=逐文件上传
 ```
+
+- `bundle`：将所有固件打包为一个 `openwrt-firmware-<target>.tar.zst`，单次上传约 180MB，大文件 PUT 更可靠，适合高延迟或反代 WebDAV。
+- `direct`：逐文件上传，适合局域网或低延迟服务器。
 
 启用 `webdav` 时，workflow 会在编译前检查：
 
@@ -211,3 +215,6 @@ files_zip_url=https://example.com/openwrt-files/
 - 如果 zip 解压后固件中路径多了一层目录，请检查 zip 首层是否已经是固件根目录内容。
 - 如果 zip 内中文文件名在 `unzip` 下出现 `mismatching "local" filename`，脚本会改用 Python 解压并自动尝试 UTF-8/GBK/CP936 文件名解码。
 - `files.zip` 解压后会自动把文本配置和脚本转换为 LF；`files/` 下所有普通文件会自动加执行权限，避免 uci-defaults、init.d、bin 等脚本权限不足。
+- WebDAV 上传慢或反复 502：默认使用 `bundle` 模式打包成单个 `tar.zst`，将多次上传合并为一次；若服务端超时较短可调整 nginx `proxy_read_timeout` / `client_max_body_size`。也可使用 `webdav_mode: direct` 逐文件上传。
+- 缓存复用：`actions/cache` 的保存基于 step 执行成功；编译成功后缓存立即保存，即使后续 WebDAV 上传失败也不会丢失缓存。缓存的 key 包含 `config.yaml`、`applist` 和 `config/.config` 的哈希——如果源码未大更新、仅变更固件配置，缓存同样有效。源码大更新时可以设置 `clean_cache: true` 跳过旧缓存或触发 `Clean failed same-target caches` 步骤自动清理当前 target 的过期缓存。
+- 私密取件：若固件包含私密信息，建议同时启用 `output.artifact: true`（保留天数设为较短值，artifact 在私有仓库/公有仓库均需谨慎评估）加上 WebDAV `bundle` 模式加密上传。也可以单独使用 WebDAV，上传前将固件打包加密（可通过 `files.zip` 预置加密脚本）。GitHub Release 或公开 artifact 不应用于包含密钥/自定义配置的私有固件。

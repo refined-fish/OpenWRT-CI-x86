@@ -90,10 +90,10 @@ jobs:
         run: |
           bash scripts/prepare_source.sh
 
-      - name: Cache downloads
-        id: cache-downloads
+      - name: Restore downloads cache
+        id: restore-downloads
         if: env.CLEAN_CACHE != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ${{ env.OPENWRT_DIR }}/dl
@@ -102,10 +102,10 @@ jobs:
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
 
-      - name: Cache toolchain
-        id: cache-toolchain
+      - name: Restore toolchain cache
+        id: restore-toolchain
         if: env.CLEAN_CACHE != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ${{ env.OPENWRT_DIR }}/staging_dir/host*
@@ -130,10 +130,10 @@ jobs:
             echo "No restored toolchain cache found"
           fi
 
-      - name: Cache ccache
-        id: cache-ccache
+      - name: Restore ccache
+        id: restore-ccache
         if: env.CLEAN_CACHE != 'true' && env.USE_CCACHE == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.OPENWRT_DIR }}/.ccache
           key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}
@@ -151,12 +151,37 @@ jobs:
           bash scripts/prepare_config.sh
 
       - name: Build OpenWrt
+        id: build_openwrt
         shell: bash
         run: |
           bash scripts/build_openwrt.sh
 
+      - name: Save downloads cache
+        if: success() && env.CLEAN_CACHE != 'true' && steps.restore-downloads.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.OPENWRT_DIR }}/dl
+          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('config.yaml', 'applist', 'config/.config') }}
+
+      - name: Save toolchain cache
+        if: success() && env.CLEAN_CACHE != 'true' && steps.restore-toolchain.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.OPENWRT_DIR }}/staging_dir/host*
+            ${{ env.OPENWRT_DIR }}/staging_dir/tool*
+          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('config.yaml', 'applist', 'config/.config') }}
+
+      - name: Save ccache
+        if: success() && env.CLEAN_CACHE != 'true' && env.USE_CCACHE == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.OPENWRT_DIR }}/.ccache
+          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}
+
       - name: Clean failed same-target caches
-        if: failure() && env.CLEAN_CACHE != 'true'
+        if: failure() && steps.build_openwrt.outcome == 'failure' && env.CLEAN_CACHE != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
