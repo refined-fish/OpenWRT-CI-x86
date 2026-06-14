@@ -4,14 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       files_zip_url:
-        description: '一次性 files.zip 下载地址；为空则使用 secrets.FILES_ZIP_URL；仍为空则跳过'
+        description: 'files.zip 下载地址；可填单个 zip 或包含多个 zip 的目录；为空则使用 secrets.FILES_ZIP_URL；仍为空则跳过'
         required: false
         type: string
-      upload_webdav:
-        description: '是否上传正式固件到 WebDAV'
-        required: true
-        default: true
-        type: boolean
       clean_cache:
         description: '是否跳过已有缓存并重新编译'
         required: true
@@ -23,6 +18,5 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       files_zip_url: ${{ inputs.files_zip_url }}
-      upload_webdav: ${{ inputs.upload_webdav }}
       clean_cache: ${{ inputs.clean_cache }}
     secrets: inherit

@@ -1,13 +1,22 @@
 # 当 config/.config 不存在时，本文件用于追加需要安装的软件包。
 # 一行一个 OpenWrt 软件包名
-luci-ssl-openssl
+
+# 依赖
+luci-app-nikki
+
+# 主题
+luci-theme-argon
+
+# luci软件
 luci-app-diskman
 luci-app-filemanager
 luci-app-ttyd
+luci-app-nikki
+
+# 软件包
 nano
 coremark
 htop
 qemu-ga
 unzip
 7z
-luci-app-nikki

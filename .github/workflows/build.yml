@@ -6,16 +6,13 @@ on:
       files_zip_url:
         required: false
         type: string
-      upload_webdav:
-        required: true
-        type: boolean
       clean_cache:
         required: true
         type: boolean
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     env:
       TZ: Asia/Shanghai
       WORKSPACE_DIR: ${{ github.workspace }}
@@ -25,7 +22,6 @@ jobs:
       WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
       WEBDAV_USERNAME: ${{ secrets.WEBDAV_USERNAME }}
       WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
-      UPLOAD_WEBDAV: ${{ inputs.upload_webdav }}
       CLEAN_CACHE: ${{ inputs.clean_cache }}
 
     steps:
@@ -36,25 +32,22 @@ jobs:
         shell: bash
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
-          sudo apt-get clean
+          sudo -E apt -yqq autoremove --purge
+          sudo -E apt -yqq autoclean
+          sudo -E apt -yqq clean
           df -h
 
       - name: Install OpenWrt build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
         shell: bash
         run: |
-          sudo -E apt-get update
-          sudo -E apt-get install -y \
-            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-            bzip2 ccache clang cmake cpio curl device-tree-compiler dos2unix fastjar file flex \
-            gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool jq \
-            libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev \
-            libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
-            libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano ninja-build \
-            p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
-            python3-yaml qemu-utils rsync scons squashfs-tools subversion swig texinfo \
-            uglifyjs unzip upx-ucl vim wget xmlto xxd zlib1g-dev zip zstd
+          sudo -E apt -yqq update
+          sudo -E apt -yqq full-upgrade
+          sudo -E apt -yqq install dos2unix libfuse-dev python3 python3-pip python3-yaml jq zip unzip zstd qemu-utils ccache curl git
           sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
           python3 -m pip install --user pyyaml
+          sudo -E systemctl daemon-reload
           sudo -E timedatectl set-timezone "Asia/Shanghai"
 
       - name: Normalize scripts
@@ -78,6 +71,20 @@ jobs:
         run: |
           python3 scripts/parse_config.py config.yaml "$GITHUB_ENV"
 
+      - name: Validate output settings
+        shell: bash
+        run: |
+          if [ "${OUTPUT_ARTIFACT:-true}" != "true" ] && [ "${OUTPUT_WEBDAV:-false}" != "true" ]; then
+            echo "At least one output method must be enabled"
+            exit 1
+          fi
+          if [ "${OUTPUT_WEBDAV:-false}" = "true" ]; then
+            if [ -z "${WEBDAV_PATH:-}" ] || [ -z "${WEBDAV_URL:-}" ] || [ -z "${WEBDAV_USERNAME:-}" ] || [ -z "${WEBDAV_PASSWORD:-}" ]; then
+              echo "output.webdav is enabled, but WEBDAV_URL/WEBDAV_USERNAME/WEBDAV_PASSWORD or upload.webdav_path is missing"
+              exit 1
+            fi
+          fi
+
       - name: Clone OpenWrt source
         shell: bash
         run: |
@@ -89,9 +96,9 @@ jobs:
         with:
           path: |
             ${{ env.OPENWRT_DIR }}/dl
-          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ env.TARGET_SUBTARGET }}-${{ hashFiles('config.yaml', 'applist', 'config/.config') }}
+          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('config.yaml', 'applist', 'config/.config') }}
           restore-keys: |
-            openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ env.TARGET_SUBTARGET }}-
+            openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
 
       - name: Cache toolchain
@@ -101,9 +108,9 @@ jobs:
           path: |
             ${{ env.OPENWRT_DIR }}/staging_dir/host*
             ${{ env.OPENWRT_DIR }}/staging_dir/tool*
-          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ env.TARGET_SUBTARGET }}-${{ hashFiles('config.yaml', 'applist', 'config/.config') }}
+          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('config.yaml', 'applist', 'config/.config') }}
           restore-keys: |
-            openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ env.TARGET_SUBTARGET }}-
+            openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
 
       - name: Refresh restored toolchain cache
@@ -126,9 +133,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.OPENWRT_DIR }}/.ccache
-          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ env.TARGET_SUBTARGET }}-${{ github.run_id }}
+          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}
           restore-keys: |
-            openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ env.TARGET_SUBTARGET }}-
+            openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
 
       - name: Prepare feeds
         shell: bash
@@ -140,45 +147,36 @@ jobs:
         run: |
           bash scripts/prepare_config.sh
 
-      - name: Apply custom files
-        shell: bash
-        run: |
-          bash scripts/apply_files.sh
-
       - name: Build OpenWrt
         shell: bash
         run: |
           bash scripts/build_openwrt.sh
 
-      - name: Filter release firmware
-        shell: bash
-        run: |
-          bash scripts/filter_firmware.sh
-
       - name: Upload firmware artifact
+        if: env.OUTPUT_ARTIFACT == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-${{ env.TARGET_ARCH }}-${{ env.TARGET_SUBTARGET }}-${{ env.TARGET_DEVICE }}-${{ github.run_number }}
+          name: openwrt-${{ env.TARGET_SLUG }}-${{ github.run_number }}
           path: firmware-output/
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload firmware to WebDAV
-        if: env.UPLOAD_WEBDAV == 'true'
+        if: env.OUTPUT_WEBDAV == 'true'
         id: upload_webdav
-        continue-on-error: true
+        continue-on-error: ${{ env.OUTPUT_ARTIFACT == 'true' }}
         shell: bash
         run: |
           bash scripts/upload_webdav.sh
 
       - name: Report WebDAV fallback
-        if: env.UPLOAD_WEBDAV == 'true' && steps.upload_webdav.outcome == 'failure'
+        if: env.OUTPUT_WEBDAV == 'true' && env.OUTPUT_ARTIFACT == 'true' && steps.upload_webdav.outcome == 'failure'
         shell: bash
         run: |
           {
             echo "## WebDAV upload failed"
             echo
             echo "Firmware artifact has already been uploaded by GitHub Actions."
-            echo "Use the artifact named openwrt-${TARGET_ARCH}-${TARGET_SUBTARGET}-${TARGET_DEVICE}-${GITHUB_RUN_NUMBER} as fallback."
+            echo "Use the artifact named openwrt-${TARGET_SLUG}-${GITHUB_RUN_NUMBER} as fallback."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning::WebDAV upload failed; GitHub Actions artifact is available as fallback."

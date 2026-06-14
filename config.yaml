@@ -4,8 +4,11 @@ source:
 
 target:
   arch: "x86"
-  subtarget: "64"
-  device: "generic"
+  subtarget: "x86_64"
+  device: "generic x86_64"
+  # device: "multiple devices"
+  # devices:
+  #   - "generic x86_64"
 
 feeds:
   - name: nikki
@@ -14,9 +17,25 @@ feeds:
 
 build:
   language: zh-cn
-  rootfs_size_mb: "512"
-  grub_timeout: "3"
   use_ccache: true
+
+image:
+  filesystems:
+    #- ext4
+    - squashfs
+  initramfs: false
+  recovery: false
+  #legacy_boot: true
+  uefi_boot: true
+  kernel_partition_mb: "32"
+  rootfs_size_mb: "512"
+  pve: false
+  vmware: false
+  hyperv: false
+
+output:
+  artifact: false
+  webdav: true
 
 upload:
   webdav_path: /openwrt

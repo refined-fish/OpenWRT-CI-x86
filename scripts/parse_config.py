@@ -7,35 +7,58 @@ from pathlib import Path
 import yaml
 
 
+X86_SUBTARGETS = {
+    "64": "64",
+    "x86_64": "64",
+}
+
+X86_DEVICES = {
+    "generic": "generic",
+    "generic x86_64": "generic",
+}
+
+
 def require(value, name):
-    """Raises SystemExit if value is missing or empty."""
     if value is None or str(value).strip() == "":
         raise SystemExit(f"Missing required config value: {name}")
     return str(value).strip()
 
 
 def env_escape(value):
-    """Safe encoding for $GITHUB_ENV: no newlines, no leading/trailing whitespace."""
     return str(value).replace("\n", " ").strip()
 
 
 def slugify(value):
-    """Turn a repo URL into a filesystem-safe key segment."""
-    value = re.sub(r"^https?://", "", value)
+    value = re.sub(r"^https?://", "", str(value))
     value = re.sub(r"\.git$", "", value)
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-")
 
 
 def parse_bool(raw, default=False):
-    """Accept 1/true/yes/on (case-insensitive) as True."""
     value = default if raw is None else raw
-    return str(value).lower() in ("1", "true", "yes", "on")
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on", "y")
 
 
-def normalize(target_arch):
-    """Normalise target arch so x86/x86_64 are handled consistently downstream."""
-    mapping = {"x86": "x86"}
-    return mapping.get(target_arch, target_arch)
+def parse_list(raw, default=None):
+    if raw is None:
+        return list(default or [])
+    if isinstance(raw, (list, tuple)):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
+def map_subtarget(arch, subtarget):
+    if arch == "x86":
+        return X86_SUBTARGETS.get(subtarget, subtarget)
+    return subtarget.replace("-", "_").replace(" ", "_")
+
+
+def map_device(arch, device):
+    if arch == "x86":
+        return X86_DEVICES.get(device, slugify(device).replace("-", "_"))
+    return device.replace("-", "_").replace(" ", "_")
 
 
 def main():
@@ -53,6 +76,8 @@ def main():
     source = data.get("source") or {}
     target = data.get("target") or {}
     build = data.get("build") or {}
+    image = data.get("image") or {}
+    output = data.get("output") or {}
     upload = data.get("upload") or {}
 
     source_repo = require(source.get("repo"), "source.repo")
@@ -61,23 +86,77 @@ def main():
     target_subtarget = require(target.get("subtarget"), "target.subtarget")
     target_device = require(target.get("device"), "target.device")
 
+    target_subtarget_symbol = map_subtarget(target_arch, target_subtarget)
+    multi_profile = target_device.strip().lower() == "multiple devices"
+    target_devices = parse_list(target.get("devices"))
+    if multi_profile and not target_devices:
+        raise SystemExit("target.devices is required when target.device is 'multiple devices'")
+
+    if multi_profile:
+        target_device_symbol = "multiple"
+        target_device_symbols = [map_device(target_arch, device) for device in target_devices]
+        target_device_slug = "multiple-devices"
+    else:
+        target_device_symbol = map_device(target_arch, target_device)
+        target_device_symbols = [target_device_symbol]
+        target_device_slug = slugify(target_device)
+
     language = str(build.get("language") or "zh-cn").strip()
-    rootfs_size_mb = str(build.get("rootfs_size_mb") or "").strip()
-    grub_timeout = str(build.get("grub_timeout") or "").strip()
     use_ccache = parse_bool(build.get("use_ccache"), True)
-    webdav_path = str(upload.get("webdav_path") or "/openwrt").strip()
+
+    image_filesystems = [item.lower() for item in parse_list(image.get("filesystems"), ["ext4", "squashfs"])]
+    valid_filesystems = {"ext4", "squashfs"}
+    unknown_filesystems = sorted(set(image_filesystems) - valid_filesystems)
+    if unknown_filesystems:
+        raise SystemExit(f"Unsupported image.filesystems value(s): {', '.join(unknown_filesystems)}")
+
+    image_rootfs_size_mb = str(image.get("rootfs_size_mb") or build.get("rootfs_size_mb") or "").strip()
+    image_kernel_partition_mb = str(image.get("kernel_partition_mb") or "").strip()
+    grub_timeout = str(image.get("grub_timeout") or build.get("grub_timeout") or "").strip()
+
+    output_artifact = parse_bool(output.get("artifact"), True)
+    output_webdav = parse_bool(output.get("webdav"), False)
+    if not output_artifact and not output_webdav:
+        raise SystemExit("At least one output method must be enabled: output.artifact or output.webdav")
+
+    webdav_path = str(upload.get("webdav_path") or "").strip()
+    if output_webdav and not webdav_path:
+        raise SystemExit("upload.webdav_path is required when output.webdav is true")
+    if not webdav_path:
+        webdav_path = "/openwrt"
+
+    target_slug = slugify(f"{target_arch}-{target_subtarget}-{target_device_slug}")
 
     entries = {
         "SOURCE_REPO": source_repo,
         "SOURCE_BRANCH": source_branch,
         "SOURCE_REPO_SLUG": slugify(source_repo),
-        "TARGET_ARCH": normalize(target_arch),
+        "TARGET_ARCH": target_arch,
         "TARGET_SUBTARGET": target_subtarget,
         "TARGET_DEVICE": target_device,
+        "TARGET_SUBTARGET_SYMBOL": target_subtarget_symbol,
+        "TARGET_DEVICE_SYMBOL": target_device_symbol,
+        "TARGET_DEVICE_SYMBOLS": " ".join(target_device_symbols),
+        "TARGET_DEVICES": "|".join(target_devices),
+        "TARGET_MULTI_PROFILE": "true" if multi_profile else "false",
+        "TARGET_SLUG": target_slug,
         "BUILD_LANGUAGE": language,
-        "ROOTFS_SIZE_MB": rootfs_size_mb,
-        "GRUB_TIMEOUT": grub_timeout,
         "USE_CCACHE": "true" if use_ccache else "false",
+        "IMAGE_FILESYSTEMS": " ".join(image_filesystems),
+        "IMAGE_EXT4": "true" if "ext4" in image_filesystems else "false",
+        "IMAGE_SQUASHFS": "true" if "squashfs" in image_filesystems else "false",
+        "IMAGE_INITRAMFS": "true" if parse_bool(image.get("initramfs"), False) else "false",
+        "IMAGE_RECOVERY": "true" if parse_bool(image.get("recovery"), False) else "false",
+        "IMAGE_LEGACY_BOOT": "true" if parse_bool(image.get("legacy_boot"), True) else "false",
+        "IMAGE_UEFI_BOOT": "true" if parse_bool(image.get("uefi_boot"), True) else "false",
+        "IMAGE_KERNEL_PARTITION_MB": image_kernel_partition_mb,
+        "IMAGE_ROOTFS_SIZE_MB": image_rootfs_size_mb,
+        "IMAGE_PVE": "true" if parse_bool(image.get("pve"), False) else "false",
+        "IMAGE_VMWARE": "true" if parse_bool(image.get("vmware"), False) else "false",
+        "IMAGE_HYPERV": "true" if parse_bool(image.get("hyperv"), False) else "false",
+        "GRUB_TIMEOUT": grub_timeout,
+        "OUTPUT_ARTIFACT": "true" if output_artifact else "false",
+        "OUTPUT_WEBDAV": "true" if output_webdav else "false",
         "WEBDAV_PATH": webdav_path,
     }
 

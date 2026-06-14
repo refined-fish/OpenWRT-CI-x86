@@ -2,6 +2,7 @@
 set -euo pipefail
 
 : "${OPENWRT_DIR:?OPENWRT_DIR is required}"
+: "${WORKSPACE_DIR:?WORKSPACE_DIR is required}"
 
 cd "$OPENWRT_DIR"
 
@@ -21,6 +22,28 @@ print_machine_info() {
   echo "======================="
 }
 
+run_full_build() {
+  openwrt_make defconfig
+  openwrt_make download -j8 V=s
+
+  local threads
+  threads="$(nproc)"
+  echo "Building with $threads threads"
+  if ! openwrt_make -j"$threads"; then
+    echo "Parallel build failed; retrying with single thread and verbose log"
+    openwrt_make -j1 V=s
+  fi
+}
+
+run_repack_build() {
+  echo "Repacking firmware images for files variant: ${FILES_VARIANT_NAME:-default}"
+  if openwrt_make target/install V=s; then
+    return 0
+  fi
+  echo "target/install failed; falling back to single-thread make for correctness"
+  openwrt_make -j1 V=s
+}
+
 if [ "${USE_CCACHE:-true}" = "true" ]; then
   export CCACHE_DIR="$OPENWRT_DIR/.ccache"
   export PATH="/usr/lib/ccache:$PATH"
@@ -29,14 +52,33 @@ if [ "${USE_CCACHE:-true}" = "true" ]; then
 fi
 
 print_machine_info
-openwrt_make defconfig
-openwrt_make download -j8 V=s
+bash "$WORKSPACE_DIR/scripts/apply_files.sh" prepare
+variant_total="$(grep -c '^[^[:space:]]' "$WORKSPACE_DIR/files-variants/variants.tsv")"
 
-THREADS="$(nproc)"
-echo "Building with $THREADS threads"
-if ! openwrt_make -j"$THREADS"; then
-  echo "Parallel build failed; retrying with single thread and verbose log"
-  openwrt_make -j1 V=s
+variant_count=0
+while IFS=$'\t' read -r variant_name _zip_path; do
+  [ -n "$variant_name" ] || continue
+  variant_count=$((variant_count + 1))
+  export FILES_VARIANT_NAME="$variant_name"
+  export FILES_VARIANT_PREFIX=""
+  if [ "$variant_total" -gt 1 ]; then
+    export FILES_VARIANT_PREFIX="$variant_name"
+  fi
+
+  bash "$WORKSPACE_DIR/scripts/apply_files.sh" apply "$variant_name"
+
+  if [ "$variant_count" -eq 1 ]; then
+    run_full_build
+  else
+    run_repack_build
+  fi
+
+  bash "$WORKSPACE_DIR/scripts/filter_firmware.sh"
+done < "$WORKSPACE_DIR/files-variants/variants.tsv"
+
+if [ "$variant_count" -eq 0 ]; then
+  echo "No files variants found"
+  exit 1
 fi
 
 if [ "${USE_CCACHE:-true}" = "true" ]; then
