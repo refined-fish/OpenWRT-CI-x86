@@ -2,7 +2,7 @@
 # 一行一个 OpenWrt 软件包名
 
 # 依赖
-luci-app-nikki
+luci-ssl-openssl
 
 # 主题
 luci-theme-argon

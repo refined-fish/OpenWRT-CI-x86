@@ -5,10 +5,9 @@ source:
 target:
   arch: "x86"
   subtarget: "x86_64"
-  device: "generic x86_64"
-  # device: "multiple devices"
-  # devices:
-  #   - "generic x86_64"
+  device: "generic x86_64" # 编译多设备时写"multiple devices"，同时使用下方字段指定设备
+  #devices:
+  #  - "generic x86_64"
 
 feeds:
   - name: nikki
@@ -25,7 +24,7 @@ image:
     - squashfs
   initramfs: false
   recovery: false
-  #legacy_boot: true
+  legacy_boot: false
   uefi_boot: true
   kernel_partition_mb: "32"
   rootfs_size_mb: "512"
