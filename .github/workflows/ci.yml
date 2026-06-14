@@ -121,106 +121,6 @@ jobs:
           set -euo pipefail
           bash scripts/prepare_source.sh
 
-      - name: Generate cache fingerprints
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$WORKSPACE_DIR"
-          source_hash="$(git -C "$OPENWRT_DIR" log -1 --format='%H')"
-          echo "OpenWrt source HEAD: ${source_hash:0:12}"
-
-          python3 <<'PY' > .cache-fp-toolchain
-          import subprocess
-          import yaml
-
-          cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
-          source_hash = subprocess.check_output(
-              ["git", "-C", "openwrt", "log", "-1", "--format=%H"], text=True
-          ).strip()
-          print(f"source_hash={source_hash}")
-          for feed in cfg.get("feeds", []) or []:
-              print(f'feed: {feed.get("name", "")} {feed.get("url", "")} {feed.get("branch", "")}')
-          for package in cfg.get("extra_packages", []) or []:
-              print(f'extra: {package.get("name", "")} {package.get("url", "")} {package.get("branch", "")} {package.get("dir", "")}')
-          PY
-
-          python3 <<'PY' > .cache-fp-dl
-          import pathlib
-          import subprocess
-          import yaml
-
-          cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
-          source_hash = subprocess.check_output(
-              ["git", "-C", "openwrt", "log", "-1", "--format=%H"], text=True
-          ).strip()
-          print(f"source_hash={source_hash}")
-          for feed in cfg.get("feeds", []) or []:
-              print(f'feed: {feed.get("name", "")} {feed.get("url", "")} {feed.get("branch", "")}')
-          for package in cfg.get("extra_packages", []) or []:
-              print(f'extra: {package.get("name", "")} {package.get("url", "")} {package.get("branch", "")} {package.get("dir", "")}')
-          applist = pathlib.Path("applist")
-          if applist.exists():
-              print(applist.read_text(encoding="utf-8"))
-          build = cfg.get("build", {}) or {}
-          image = cfg.get("image", {}) or {}
-          print(f"build.language={build.get('language', '')}")
-          for key in (
-              "filesystems", "initramfs", "recovery", "legacy_boot", "uefi_boot",
-              "kernel_partition_mb", "rootfs_size_mb", "pve", "vmware", "hyperv",
-          ):
-              print(f"image.{key}={image.get(key, '')}")
-          config_file = pathlib.Path("config/.config")
-          prefixes = (
-              "CONFIG_PACKAGE_", "CONFIG_TARGET_ROOTFS_", "CONFIG_LUCI_LANG_",
-              "CONFIG_GRUB_IMAGES", "CONFIG_EFI_IMAGES", "CONFIG_VMDK_",
-              "CONFIG_VHDX_", "CONFIG_QCOW2_",
-          )
-          if config_file.exists():
-              for line in config_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                  if line.startswith(prefixes):
-                      print(line)
-          PY
-
-          python3 <<'PY' > .cache-fp-target
-          import pathlib
-          import subprocess
-          import yaml
-
-          cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
-          source_hash = subprocess.check_output(
-              ["git", "-C", "openwrt", "log", "-1", "--format=%H"], text=True
-          ).strip()
-          print(f"source_hash={source_hash}")
-          for feed in cfg.get("feeds", []) or []:
-              print(f'feed: {feed.get("name", "")} {feed.get("url", "")} {feed.get("branch", "")}')
-          for package in cfg.get("extra_packages", []) or []:
-              print(f'extra: {package.get("name", "")} {package.get("url", "")} {package.get("branch", "")} {package.get("dir", "")}')
-          applist = pathlib.Path("applist")
-          if applist.exists():
-              print(applist.read_text(encoding="utf-8"))
-          target = cfg.get("target", {}) or {}
-          build = cfg.get("build", {}) or {}
-          image = cfg.get("image", {}) or {}
-          config_file = pathlib.Path("config/.config")
-          if config_file.exists():
-              print(config_file.read_text(encoding="utf-8", errors="ignore"))
-          for key in ("arch", "subtarget", "device", "devices"):
-              print(f"target.{key}={target.get(key, '')}")
-          print(f"build.language={build.get('language', '')}")
-          for key in (
-              "filesystems", "initramfs", "recovery", "legacy_boot", "uefi_boot",
-              "kernel_partition_mb", "rootfs_size_mb", "pve", "vmware", "hyperv",
-          ):
-              print(f"image.{key}={image.get(key, '')}")
-          PY
-
-          echo "--- toolchain fingerprint ---"
-          cat .cache-fp-toolchain
-          echo "--- downloads fingerprint ---"
-          cat .cache-fp-dl
-          echo "--- target fingerprint ---"
-          cat .cache-fp-target
-
       - name: Clean same-target caches on demand
         if: env.CLEAN_CACHE == 'true'
         env:
@@ -249,7 +149,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.OPENWRT_DIR }}/dl
-          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-dl') }}
+          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
@@ -264,7 +164,7 @@ jobs:
             ${{ env.OPENWRT_DIR }}/staging_dir/tool*
             ${{ env.OPENWRT_DIR }}/build_dir/host
             ${{ env.OPENWRT_DIR }}/build_dir/toolchain-*
-          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-toolchain') }}
+          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
@@ -278,7 +178,7 @@ jobs:
           path: |
             ${{ env.OPENWRT_DIR }}/staging_dir/target-*
             ${{ env.OPENWRT_DIR }}/build_dir/target-*
-          key: openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-target') }}
+          key: openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
@@ -289,7 +189,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.OPENWRT_DIR }}/.ccache
-          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}
+          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
 
@@ -329,15 +229,15 @@ jobs:
           bash scripts/build_openwrt.sh
 
       - name: Save downloads cache
-        if: success() && steps.restore-downloads.outputs.cache-hit != 'true'
+        if: success()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: ${{ env.OPENWRT_DIR }}/dl
-          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-dl') }}
+          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Save toolchain cache
-        if: success() && steps.restore-toolchain.outputs.cache-hit != 'true'
+        if: success()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
@@ -346,17 +246,17 @@ jobs:
             ${{ env.OPENWRT_DIR }}/staging_dir/tool*
             ${{ env.OPENWRT_DIR }}/build_dir/host
             ${{ env.OPENWRT_DIR }}/build_dir/toolchain-*
-          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-toolchain') }}
+          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Save target build cache
-        if: success() && steps.restore-target.outputs.cache-hit != 'true'
+        if: success()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: |
             ${{ env.OPENWRT_DIR }}/staging_dir/target-*
             ${{ env.OPENWRT_DIR }}/build_dir/target-*
-          key: openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ hashFiles('.cache-fp-target') }}
+          key: openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Save ccache
         if: success() && env.USE_CCACHE == 'true'
@@ -364,7 +264,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ env.OPENWRT_DIR }}/.ccache
-          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}
+          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Clean failed same-target caches
         if: failure() && steps.build_openwrt.outcome == 'failure' && env.CLEAN_CACHE != 'true'

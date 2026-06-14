@@ -52,6 +52,7 @@ from pathlib import Path
 
 workspace = Path(environ["WORKSPACE_DIR"])
 config = yaml.safe_load((workspace / "config.yaml").read_text(encoding="utf-8")) or {}
+separator = "\x1f"
 
 for item in config.get("extra_packages") or []:
     if not isinstance(item, dict):
@@ -67,13 +68,24 @@ for item in config.get("extra_packages") or []:
         raise SystemExit(f"Unsafe extra_packages dir: {directory}")
     if not name:
         name = path.name
-    print("\t".join([name, url, branch, directory]))
+    print(separator.join([name, url, branch, directory]))
 PY
 
 if [ -s "$WORKSPACE_DIR/extra-packages.tsv" ]; then
-  while IFS=$'\t' read -r name url branch dir; do
+  while IFS=$'\x1f' read -r name url branch dir; do
     [ -n "$url" ] || continue
+    if [ -z "$dir" ]; then
+      echo "extra package $name has empty destination dir; refuse to continue"
+      exit 1
+    fi
     dest="$OPENWRT_DIR/$dir"
+    case "$(realpath -m "$dest")" in
+      "$(realpath -m "$OPENWRT_DIR")"/*) ;;
+      *)
+        echo "extra package $name destination escapes OPENWRT_DIR: $dir"
+        exit 1
+        ;;
+    esac
     echo "Cloning extra package $name to $dir"
     rm -rf "$dest"
     mkdir -p "$(dirname "$dest")"

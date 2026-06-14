@@ -1,7 +1,6 @@
 openwrt/
 firmware-output/
 files-variants/
-.cache-fp-*
 extra-packages.tsv
 openwrt-firmware-*.tar.zst
 *.zip
