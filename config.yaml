@@ -38,8 +38,8 @@ image:
   hyperv: false
 
 output:
-  artifact: false
-  webdav: true
+  artifact: true
+  webdav: false
 
 upload:
   webdav_path: /openwrt
