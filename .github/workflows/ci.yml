@@ -129,60 +129,90 @@ jobs:
           source_hash="$(git -C "$OPENWRT_DIR" log -1 --format='%H')"
           echo "OpenWrt source HEAD: ${source_hash:0:12}"
 
-          {
-            echo "source_hash=$source_hash"
-            python3 <<'PY'
-import yaml
+          python3 <<'PY' > .cache-fp-toolchain
+          import subprocess
+          import yaml
 
-cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
-for feed in cfg.get("feeds", []) or []:
-    print(f'feed: {feed.get("name", "")} {feed.get("url", "")} {feed.get("branch", "")}')
-for package in cfg.get("extra_packages", []) or []:
-    print(f'extra: {package.get("name", "")} {package.get("url", "")} {package.get("branch", "")} {package.get("dir", "")}')
-PY
-          } > .cache-fp-toolchain
+          cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
+          source_hash = subprocess.check_output(
+              ["git", "-C", "openwrt", "log", "-1", "--format=%H"], text=True
+          ).strip()
+          print(f"source_hash={source_hash}")
+          for feed in cfg.get("feeds", []) or []:
+              print(f'feed: {feed.get("name", "")} {feed.get("url", "")} {feed.get("branch", "")}')
+          for package in cfg.get("extra_packages", []) or []:
+              print(f'extra: {package.get("name", "")} {package.get("url", "")} {package.get("branch", "")} {package.get("dir", "")}')
+          PY
 
-          cp .cache-fp-toolchain .cache-fp-dl
-          {
-            [ -f applist ] && cat applist
-            python3 <<'PY'
-import yaml
+          python3 <<'PY' > .cache-fp-dl
+          import pathlib
+          import subprocess
+          import yaml
 
-cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
-build = cfg.get("build", {}) or {}
-image = cfg.get("image", {}) or {}
-for key in ("language",):
-    print(f"build.{key}={build.get(key, '')}")
-for key in (
-    "filesystems",
-    "initramfs",
-    "recovery",
-    "legacy_boot",
-    "uefi_boot",
-    "kernel_partition_mb",
-    "rootfs_size_mb",
-    "pve",
-    "vmware",
-    "hyperv",
-):
-    print(f"image.{key}={image.get(key, '')}")
-PY
-            if [ -f config/.config ]; then
-              grep -E '^CONFIG_PACKAGE_|^CONFIG_TARGET_ROOTFS_|^CONFIG_LUCI_LANG_|^CONFIG_GRUB_IMAGES|^CONFIG_EFI_IMAGES|^CONFIG_VMDK_|^CONFIG_VHDX_|^CONFIG_QCOW2_' config/.config || true
-            fi
-          } >> .cache-fp-dl
+          cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
+          source_hash = subprocess.check_output(
+              ["git", "-C", "openwrt", "log", "-1", "--format=%H"], text=True
+          ).strip()
+          print(f"source_hash={source_hash}")
+          for feed in cfg.get("feeds", []) or []:
+              print(f'feed: {feed.get("name", "")} {feed.get("url", "")} {feed.get("branch", "")}')
+          for package in cfg.get("extra_packages", []) or []:
+              print(f'extra: {package.get("name", "")} {package.get("url", "")} {package.get("branch", "")} {package.get("dir", "")}')
+          applist = pathlib.Path("applist")
+          if applist.exists():
+              print(applist.read_text(encoding="utf-8"))
+          build = cfg.get("build", {}) or {}
+          image = cfg.get("image", {}) or {}
+          print(f"build.language={build.get('language', '')}")
+          for key in (
+              "filesystems", "initramfs", "recovery", "legacy_boot", "uefi_boot",
+              "kernel_partition_mb", "rootfs_size_mb", "pve", "vmware", "hyperv",
+          ):
+              print(f"image.{key}={image.get(key, '')}")
+          config_file = pathlib.Path("config/.config")
+          prefixes = (
+              "CONFIG_PACKAGE_", "CONFIG_TARGET_ROOTFS_", "CONFIG_LUCI_LANG_",
+              "CONFIG_GRUB_IMAGES", "CONFIG_EFI_IMAGES", "CONFIG_VMDK_",
+              "CONFIG_VHDX_", "CONFIG_QCOW2_",
+          )
+          if config_file.exists():
+              for line in config_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                  if line.startswith(prefixes):
+                      print(line)
+          PY
 
-          cp .cache-fp-dl .cache-fp-target
-          {
-            python3 <<'PY'
-import yaml
+          python3 <<'PY' > .cache-fp-target
+          import pathlib
+          import subprocess
+          import yaml
 
-cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
-target = cfg.get("target", {}) or {}
-for key in ("arch", "subtarget", "device", "devices"):
-    print(f"target.{key}={target.get(key, '')}")
-PY
-          } >> .cache-fp-target
+          cfg = yaml.safe_load(open("config.yaml", encoding="utf-8")) or {}
+          source_hash = subprocess.check_output(
+              ["git", "-C", "openwrt", "log", "-1", "--format=%H"], text=True
+          ).strip()
+          print(f"source_hash={source_hash}")
+          for feed in cfg.get("feeds", []) or []:
+              print(f'feed: {feed.get("name", "")} {feed.get("url", "")} {feed.get("branch", "")}')
+          for package in cfg.get("extra_packages", []) or []:
+              print(f'extra: {package.get("name", "")} {package.get("url", "")} {package.get("branch", "")} {package.get("dir", "")}')
+          applist = pathlib.Path("applist")
+          if applist.exists():
+              print(applist.read_text(encoding="utf-8"))
+          target = cfg.get("target", {}) or {}
+          build = cfg.get("build", {}) or {}
+          image = cfg.get("image", {}) or {}
+          config_file = pathlib.Path("config/.config")
+          if config_file.exists():
+              print(config_file.read_text(encoding="utf-8", errors="ignore"))
+          for key in ("arch", "subtarget", "device", "devices"):
+              print(f"target.{key}={target.get(key, '')}")
+          print(f"build.language={build.get('language', '')}")
+          for key in (
+              "filesystems", "initramfs", "recovery", "legacy_boot", "uefi_boot",
+              "kernel_partition_mb", "rootfs_size_mb", "pve", "vmware", "hyperv",
+          ):
+              print(f"image.{key}={image.get(key, '')}")
+          PY
 
           echo "--- toolchain fingerprint ---"
           cat .cache-fp-toolchain
