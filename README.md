@@ -144,9 +144,7 @@ workflow 使用 `actions/cache` 恢复和保存：
 - `build_dir/target-*`
 - `.ccache`
 
-缓存策略偏乐观，适合短时间内重复编译、只增减软件包或替换 `files.zip` 的个人使用方式。缓存恢复只按当前源码仓库、分支和 target 前缀匹配，不再校验 OpenWrt 源码 hash、`config.yaml`、`applist` 或 `.config` 内容变化；如果确实更换架构、源码分支或做了大幅配置调整，请手动把 `clean_cache` 设为 `true`。`clean_cache` 设为 `true` 时会先删除当前源码、分支和 target 前缀下的旧缓存，跳过恢复，编译成功后仍保存新缓存。
-
-如果编译失败，workflow 会用 `gh cache` 清理当前源码、分支和 target 前缀下的相关缓存，避免下次继续命中坏缓存。
+缓存策略偏乐观，适合短时间内重复编译、只增减软件包或替换 `files.zip` 的个人使用方式。缓存恢复只按当前源码仓库、分支和 target 前缀匹配，不再校验 OpenWrt 源码 hash、`config.yaml`、`applist` 或 `.config` 内容变化；如果确实更换架构、源码分支、做了大幅配置调整，或判断失败由缓存污染导致，请手动把 `clean_cache` 设为 `true`。`clean_cache` 设为 `true` 时会先删除当前源码、分支和 target 前缀下的旧缓存，跳过恢复，编译成功后仍保存新缓存。普通编译失败不会自动删除缓存。
 
 ## 上传
 
