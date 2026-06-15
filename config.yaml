@@ -38,8 +38,9 @@ image:
   hyperv: false
 
 output:
-  artifact: true
-  webdav: false
+  artifact: true # 是否上传构建产物
+  webdav: false # 是否上传到webdav服务器
 
 upload:
-  webdav_path: /openwrt
+  webdav_path: /openwrt # webdav上传路径
+  webdav_mode: direct # bundle打包后上传，direct直接上传文件
