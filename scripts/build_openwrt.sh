@@ -38,28 +38,17 @@ run_full_build() {
 clean_repack_outputs() {
   echo "Cleaning stale firmware images before repack"
   rm -rf bin/targets
-  find build_dir/target-* -type f \( \
-    -name '.built' -o \
-    -name '.image' -o \
-    -name 'root.*' -o \
-    -name '*.img' -o \
-    -name '*.img.gz' -o \
-    -name '*.bin' -o \
-    -name '*.vmdk' -o \
-    -name '*.vdi' -o \
-    -name '*.qcow2' -o \
-    -name '*.vhdx' -o \
-    -name '*.efi' \
-  \) -delete 2>/dev/null || true
 }
 
 run_repack_build() {
+  local threads
   echo "Repacking firmware images for files variant: ${FILES_VARIANT_NAME:-default}"
   clean_repack_outputs
-  if openwrt_make target/install V=s; then
+  threads="$(nproc)"
+  if openwrt_make -j"$threads" V=s; then
     return 0
   fi
-  echo "target/install failed; falling back to single-thread make for correctness"
+  echo "Parallel repack failed; retrying with single thread and verbose log"
   openwrt_make -j1 V=s
 }
 

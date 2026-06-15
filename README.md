@@ -127,7 +127,7 @@ etc/config/network
 usr/bin/custom-script
 ```
 
-目录中存在多个 zip 时，每个 zip 会作为一个 files 变体。第一个变体执行完整编译，后续变体会清空并重新解压 `files/`，再执行 `make target/install` 尝试快速重包。输出固件会加上 zip 文件名对应的前缀。
+目录中存在多个 zip 时，每个 zip 会作为一个 files 变体。第一个变体执行完整编译，后续变体会清空并重新解压 `files/`，移出旧的 `bin/targets` 产物后再次执行完整 `make -j$(nproc) V=s`，让 OpenWrt 按当前 `files/` 内容增量生成新固件。输出固件会加上 zip 文件名对应的前缀。
 
 zip 解压使用 Python 实现，会校验 zip、规避路径穿越、尝试处理 UTF-8/GBK 文件名，并把解压出的普通文件赋予可执行权限。
 
