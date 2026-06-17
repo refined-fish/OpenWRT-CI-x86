@@ -15,6 +15,8 @@ openwrt = Path(__import__('os').environ['OPENWRT_DIR'])
 config = yaml.safe_load((workspace / 'config.yaml').read_text(encoding='utf-8')) or {}
 feeds = config.get('feeds') or []
 feeds_file = openwrt / 'feeds.conf.default'
+begin_marker = '# BEGIN OpenWRT-CI custom feeds'
+end_marker = '# END OpenWRT-CI custom feeds'
 
 lines = []
 for feed in feeds:
@@ -30,13 +32,37 @@ for feed in feeds:
     else:
         lines.append(f"src-git {name} {url}\n")
 
+existing_lines = feeds_file.read_text(encoding='utf-8').splitlines(keepends=True) if feeds_file.exists() else []
+next_lines = []
+inside_block = False
+removed_block = False
+
+for line in existing_lines:
+    if line.rstrip('\n') == begin_marker:
+        inside_block = True
+        removed_block = True
+        continue
+    if inside_block:
+        if line.rstrip('\n') == end_marker:
+            inside_block = False
+        continue
+    next_lines.append(line)
+
+while next_lines and not next_lines[-1].strip():
+    next_lines.pop()
+
 if lines:
-    with feeds_file.open('a', encoding='utf-8') as handle:
-        handle.write('\n# custom feeds from config.yaml\n')
-        handle.writelines(lines)
-    print('Appended custom feeds:')
+    if next_lines:
+        next_lines.append('\n')
+    next_lines.append(f'{begin_marker}\n')
+    next_lines.extend(lines)
+    next_lines.append(f'{end_marker}\n')
+    feeds_file.write_text(''.join(next_lines), encoding='utf-8')
+    print('Configured custom feeds:')
     print(''.join(lines))
 else:
+    if removed_block:
+        feeds_file.write_text(''.join(next_lines), encoding='utf-8')
     print('No custom feeds configured')
 PY
 
@@ -49,6 +75,9 @@ import yaml
 
 from os import environ
 from pathlib import Path
+import sys
+
+sys.stdout.reconfigure(newline="\n")
 
 workspace = Path(environ["WORKSPACE_DIR"])
 config = yaml.safe_load((workspace / "config.yaml").read_text(encoding="utf-8")) or {}
@@ -71,8 +100,103 @@ for item in config.get("extra_packages") or []:
     print(separator.join([name, url, branch, directory]))
 PY
 
+reclone_extra_package() {
+  local name="$1"
+  local url="$2"
+  local branch="$3"
+  local dir="$4"
+  local dest="$5"
+
+  echo "Cloning extra package $name to $dir"
+  rm -rf "$dest"
+  mkdir -p "$(dirname "$dest")"
+
+  local clone_args=(--depth 1)
+  if [ -n "$branch" ]; then
+    clone_args+=(--branch "$branch")
+  fi
+
+  git clone "${clone_args[@]}" "$url" "$dest"
+}
+
+remote_matches() {
+  local dest="$1"
+  local url="$2"
+  local remote_url
+
+  remote_url="$(git -C "$dest" remote get-url origin 2>/dev/null || true)"
+  if [ "$remote_url" = "$url" ]; then
+    return 0
+  fi
+
+  if [ -e "$url" ] || [ -e "$remote_url" ]; then
+    if command -v cygpath >/dev/null 2>&1; then
+      [ "$(cygpath -m "$remote_url")" = "$(cygpath -m "$url")" ]
+    else
+      [ "$(realpath -m "$remote_url")" = "$(realpath -m "$url")" ]
+    fi
+  else
+    return 1
+  fi
+}
+
+reset_to_origin_head() {
+  local dest="$1"
+  local branch="$2"
+
+  git -C "$dest" fetch --depth 1 origin || return
+  if [ -n "$branch" ]; then
+    git -C "$dest" reset --hard "origin/$branch"
+  else
+    local remote_head
+    remote_head="$(git -C "$dest" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [ -n "$remote_head" ]; then
+      git -C "$dest" reset --hard "$remote_head"
+    else
+      git -C "$dest" reset --hard FETCH_HEAD
+    fi
+  fi
+}
+
+update_or_reclone_extra_package() {
+  local name="$1"
+  local url="$2"
+  local branch="$3"
+  local dir="$4"
+  local dest="$5"
+
+  if [ ! -e "$dest" ]; then
+    reclone_extra_package "$name" "$url" "$branch" "$dir" "$dest"
+    return
+  fi
+
+  if [ ! -d "$dest/.git" ]; then
+    echo "Recloning extra package $name because $dir is not a git repository"
+    reclone_extra_package "$name" "$url" "$branch" "$dir" "$dest"
+    return
+  fi
+
+  if ! remote_matches "$dest" "$url"; then
+    echo "Recloning extra package $name because origin URL changed"
+    reclone_extra_package "$name" "$url" "$branch" "$dir" "$dest"
+    return
+  fi
+
+  echo "Updating extra package $name in $dir"
+  if reset_to_origin_head "$dest" "$branch"; then
+    return
+  fi
+
+  echo "Recloning extra package $name because fetch/reset failed"
+  reclone_extra_package "$name" "$url" "$branch" "$dir" "$dest"
+}
+
 if [ -s "$WORKSPACE_DIR/extra-packages.tsv" ]; then
   while IFS=$'\x1f' read -r name url branch dir; do
+    name="${name%$'\r'}"
+    url="${url%$'\r'}"
+    branch="${branch%$'\r'}"
+    dir="${dir%$'\r'}"
     [ -n "$url" ] || continue
     if [ -z "$dir" ]; then
       echo "extra package $name has empty destination dir; refuse to continue"
@@ -86,14 +210,7 @@ if [ -s "$WORKSPACE_DIR/extra-packages.tsv" ]; then
         exit 1
         ;;
     esac
-    echo "Cloning extra package $name to $dir"
-    rm -rf "$dest"
-    mkdir -p "$(dirname "$dest")"
-    clone_args=(--depth 1)
-    if [ -n "$branch" ]; then
-      clone_args+=(--branch "$branch")
-    fi
-    git clone "${clone_args[@]}" "$url" "$dest"
+    update_or_reclone_extra_package "$name" "$url" "$branch" "$dir" "$dest"
   done < "$WORKSPACE_DIR/extra-packages.tsv"
 else
   echo "No extra packages configured"

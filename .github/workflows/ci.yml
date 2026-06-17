@@ -20,20 +20,57 @@ env:
   MIN_FREE_GB: "80"
 
 jobs:
+  cache-context:
+    runs-on: ubuntu-latest
+    outputs:
+      target_slug: ${{ steps.parse.outputs.target_slug }}
+    steps:
+      - name: Checkout CI repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install config parser dependency
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -E apt-get -yqq update
+          sudo -E apt-get -yqq install python3-yaml
+
+      - name: Parse cache target
+        id: parse
+        shell: bash
+        run: |
+          set -euo pipefail
+          env_file="$(mktemp)"
+          trap 'rm -f "$env_file"' EXIT
+          python3 scripts/parse_config.py config.yaml "$env_file" >/dev/null
+          target_slug="$(sed -n 's/^TARGET_SLUG=//p' "$env_file" | tail -n 1)"
+          if [ -z "$target_slug" ]; then
+            echo "TARGET_SLUG was not emitted by config parser" >&2
+            exit 1
+          fi
+          echo "target_slug=$target_slug" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: cache-context
+    concurrency:
+      group: openwrt-ci-${{ github.workflow }}-${{ github.ref }}-${{ needs.cache-context.outputs.target_slug }}
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     env:
       WORKSPACE_DIR: ${{ github.workspace }}
       OPENWRT_DIR: ${{ github.workspace }}/openwrt
       CLEAN_CACHE: ${{ inputs.clean_cache }}
-      FILES_ZIP_URL: ${{ secrets.FILES_ZIP_URL }}
-      WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
-      WEBDAV_USERNAME: ${{ secrets.WEBDAV_USERNAME }}
-      WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
 
     steps:
       - name: Checkout CI repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Free disk space when needed
         shell: bash
@@ -72,8 +109,11 @@ jobs:
         run: |
           set -euo pipefail
           sudo -E apt-get -yqq update
-          sudo -E apt-get -yqq install ca-certificates curl git dos2unix jq python3 python3-yaml zip unzip zstd qemu-utils ccache
-          curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh | sudo -E bash
+          sudo -E apt-get -yqq install \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses-dev libssl-dev python3 python3-yaml python3-setuptools \
+            rsync unzip zlib1g-dev file wget ca-certificates curl dos2unix jq zip zstd \
+            qemu-utils ccache subversion swig time
           sudo -E timedatectl set-timezone "$TZ" || true
 
       - name: Normalize scripts
@@ -100,7 +140,46 @@ jobs:
           set -euo pipefail
           python3 scripts/parse_config.py config.yaml "$GITHUB_ENV"
 
+      - name: Compute cache digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest_files=(
+            "config.yaml"
+            "applist"
+            "scripts/prepare_feeds.sh"
+            "scripts/prepare_config.sh"
+            "scripts/build_openwrt.sh"
+            "scripts/parse_config.py"
+          )
+          if [ -f "config/.config" ]; then
+            digest_files+=("config/.config")
+          fi
+
+          digest="$(
+            for file in "${digest_files[@]}"; do
+              if [ -f "$file" ]; then
+                sha256sum "$file"
+              fi
+            done | sha256sum | cut -d' ' -f1
+          )"
+          digest="${digest:0:16}"
+
+          {
+            echo "CACHE_DIGEST=$digest"
+            echo "CACHE_PREFIX_DL=openwrt-dl-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-${digest}-"
+            echo "CACHE_PREFIX_TOOLCHAIN=openwrt-toolchain-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-${digest}-"
+            echo "CACHE_PREFIX_TARGET=openwrt-target-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-${digest}-"
+            echo "CACHE_PREFIX_CCACHE=openwrt-ccache-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-${digest}-"
+            echo "CACHE_PREFIX_FEEDS=openwrt-feeds-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-${digest}-"
+          } >> "$GITHUB_ENV"
+          echo "Cache digest: $digest"
+
       - name: Validate output settings
+        env:
+          WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
+          WEBDAV_USERNAME: ${{ secrets.WEBDAV_USERNAME }}
+          WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
@@ -133,15 +212,33 @@ jobs:
             "openwrt-toolchain-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
             "openwrt-target-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
             "openwrt-ccache-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
+            "openwrt-feeds-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
           )
           for prefix in "${prefixes[@]}"; do
             echo "Deleting caches with prefix: $prefix"
-            gh cache list --key "$prefix" --json id,key --jq '.[] | select(.key | startswith("'"$prefix"'")) | [.id, .key] | @tsv' | while IFS=$'\t' read -r cache_id cache_key; do
+            tmp_list="$(mktemp)"
+            if ! gh cache list --key "$prefix" --limit 1000 --json id,key --jq '.[] | [.id, .key] | @tsv' > "$tmp_list"; then
+              echo "::warning::Unable to list caches for prefix ${prefix}; continuing."
+              rm -f "$tmp_list"
+              continue
+            fi
+            while IFS=$'\t' read -r cache_id cache_key; do
               [ -n "$cache_id" ] || continue
+              case "$cache_key" in
+                "$prefix"*) ;;
+                *) continue ;;
+              esac
               echo "Deleting cache: $cache_key"
               gh cache delete "$cache_id" || true
-            done
+            done < "$tmp_list"
+            rm -f "$tmp_list"
           done
+
+      - name: Mark cache restore start
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CACHE_RESTORE_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Restore downloads cache
         id: restore-downloads
@@ -149,8 +246,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.OPENWRT_DIR }}/dl
-          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
 
@@ -164,24 +262,55 @@ jobs:
             ${{ env.OPENWRT_DIR }}/staging_dir/tool*
             ${{ env.OPENWRT_DIR }}/build_dir/host
             ${{ env.OPENWRT_DIR }}/build_dir/toolchain-*
-          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-
             openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
 
+      - name: Post-restore disk check
+        id: post-restore-disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          free_gb="$(df -BG --output=avail / | tail -n 1 | tr -dc '0-9')"
+          echo "Post-restore available disk: ${free_gb}G"
+          if [ "$free_gb" -lt "$MIN_FREE_GB" ]; then
+            echo "CACHE_PRESSURE_MODE=degraded" >> "$GITHUB_ENV"
+            echo "cache_pressure_mode=degraded" >> "$GITHUB_OUTPUT"
+            echo "::warning::Post-restore disk space ${free_gb}G is below ${MIN_FREE_GB}G. Skipping optional target/feed cache work; required source, feeds update/install, config, and build steps will continue."
+          else
+            echo "CACHE_PRESSURE_MODE=normal" >> "$GITHUB_ENV"
+            echo "cache_pressure_mode=normal" >> "$GITHUB_OUTPUT"
+            echo "Post-restore disk space is above ${MIN_FREE_GB}G."
+          fi
+
       - name: Restore target build cache
         id: restore-target
-        if: env.CLEAN_CACHE != 'true'
+        if: env.CLEAN_CACHE != 'true' && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
         continue-on-error: true
         uses: actions/cache/restore@v4
         with:
           path: |
             ${{ env.OPENWRT_DIR }}/staging_dir/target-*
             ${{ env.OPENWRT_DIR }}/build_dir/target-*
-          key: openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-
             openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
+
+      - name: Restore feeds cache
+        id: restore-feeds
+        if: env.CLEAN_CACHE != 'true' && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.OPENWRT_DIR }}/feeds
+            ${{ env.OPENWRT_DIR }}/package/feeds
+          key: openwrt-feeds-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            openwrt-feeds-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-
 
       - name: Restore ccache
         id: restore-ccache
@@ -189,9 +318,64 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.OPENWRT_DIR }}/.ccache
-          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-
             openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
+
+      - name: Report cache restore summary
+        env:
+          RESTORE_DOWNLOADS_HIT: ${{ steps.restore-downloads.outputs.cache-hit }}
+          RESTORE_DOWNLOADS_OUTCOME: ${{ steps.restore-downloads.outcome }}
+          RESTORE_DOWNLOADS_MATCHED_KEY: ${{ steps.restore-downloads.outputs.cache-matched-key }}
+          RESTORE_TOOLCHAIN_HIT: ${{ steps.restore-toolchain.outputs.cache-hit }}
+          RESTORE_TOOLCHAIN_OUTCOME: ${{ steps.restore-toolchain.outcome }}
+          RESTORE_TOOLCHAIN_MATCHED_KEY: ${{ steps.restore-toolchain.outputs.cache-matched-key }}
+          RESTORE_TARGET_HIT: ${{ steps.restore-target.outputs.cache-hit }}
+          RESTORE_TARGET_OUTCOME: ${{ steps.restore-target.outcome }}
+          RESTORE_TARGET_MATCHED_KEY: ${{ steps.restore-target.outputs.cache-matched-key }}
+          RESTORE_FEEDS_HIT: ${{ steps.restore-feeds.outputs.cache-hit }}
+          RESTORE_FEEDS_OUTCOME: ${{ steps.restore-feeds.outcome }}
+          RESTORE_FEEDS_MATCHED_KEY: ${{ steps.restore-feeds.outputs.cache-matched-key }}
+          RESTORE_CCACHE_HIT: ${{ steps.restore-ccache.outputs.cache-hit }}
+          RESTORE_CCACHE_OUTCOME: ${{ steps.restore-ccache.outcome }}
+          RESTORE_CCACHE_MATCHED_KEY: ${{ steps.restore-ccache.outputs.cache-matched-key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          now="$(date +%s)"
+          elapsed="$((now - ${CACHE_RESTORE_START_EPOCH:-now}))"
+
+          summarize_restore() {
+            local family="$1"
+            local key="$2"
+            local hit="$3"
+            local outcome="$4"
+            local matched_key="$5"
+            local status="skipped"
+            if [ "$outcome" != "skipped" ]; then
+              case "$hit" in
+                true) status="hit" ;;
+                false) status="miss" ;;
+                *) status="unknown" ;;
+              esac
+            fi
+            echo "Cache restore ${family}: status=${status}, outcome=${outcome}, key=${key}, matched_key=${matched_key:-none}, elapsed=${elapsed}s"
+          }
+
+          {
+            echo "## Cache restore summary"
+            echo
+            echo "Elapsed: ${elapsed}s"
+            echo
+            echo '```text'
+            summarize_restore "downloads" "${CACHE_PREFIX_DL}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${RESTORE_DOWNLOADS_HIT:-}" "${RESTORE_DOWNLOADS_OUTCOME:-skipped}" "${RESTORE_DOWNLOADS_MATCHED_KEY:-}"
+            summarize_restore "toolchain" "${CACHE_PREFIX_TOOLCHAIN}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${RESTORE_TOOLCHAIN_HIT:-}" "${RESTORE_TOOLCHAIN_OUTCOME:-skipped}" "${RESTORE_TOOLCHAIN_MATCHED_KEY:-}"
+            summarize_restore "target" "${CACHE_PREFIX_TARGET}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${RESTORE_TARGET_HIT:-}" "${RESTORE_TARGET_OUTCOME:-skipped}" "${RESTORE_TARGET_MATCHED_KEY:-}"
+            summarize_restore "feeds" "${CACHE_PREFIX_FEEDS}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${RESTORE_FEEDS_HIT:-}" "${RESTORE_FEEDS_OUTCOME:-skipped}" "${RESTORE_FEEDS_MATCHED_KEY:-}"
+            summarize_restore "ccache" "${CACHE_PREFIX_CCACHE}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${RESTORE_CCACHE_HIT:-}" "${RESTORE_CCACHE_OUTCOME:-skipped}" "${RESTORE_CCACHE_MATCHED_KEY:-}"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Refresh restored toolchain cache
         if: env.CLEAN_CACHE != 'true'
@@ -223,20 +407,31 @@ jobs:
 
       - name: Build OpenWrt
         id: build_openwrt
+        env:
+          FILES_ZIP_URL: ${{ secrets.FILES_ZIP_URL }}
         shell: bash
         run: |
           set -euo pipefail
           bash scripts/build_openwrt.sh
 
+      - name: Mark cache save start
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CACHE_SAVE_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Save downloads cache
+        id: save-downloads
         if: success()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: ${{ env.OPENWRT_DIR }}/dl
-          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Save toolchain cache
+        id: save-toolchain
         if: success()
         continue-on-error: true
         uses: actions/cache/save@v4
@@ -246,25 +441,132 @@ jobs:
             ${{ env.OPENWRT_DIR }}/staging_dir/tool*
             ${{ env.OPENWRT_DIR }}/build_dir/host
             ${{ env.OPENWRT_DIR }}/build_dir/toolchain-*
-          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Save target build cache
-        if: success()
+        id: save-target
+        if: success() && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: |
             ${{ env.OPENWRT_DIR }}/staging_dir/target-*
             ${{ env.OPENWRT_DIR }}/build_dir/target-*
-          key: openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save feeds cache
+        id: save-feeds
+        if: success() && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.OPENWRT_DIR }}/feeds
+            ${{ env.OPENWRT_DIR }}/package/feeds
+          key: openwrt-feeds-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Save ccache
+        id: save-ccache
         if: success() && env.USE_CCACHE == 'true'
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: ${{ env.OPENWRT_DIR }}/.ccache
-          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report cache save summary
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          now="$(date +%s)"
+          elapsed="$((now - ${CACHE_SAVE_START_EPOCH:-now}))"
+
+          summarize_save() {
+            local family="$1"
+            local key="$2"
+            local outcome="$3"
+            echo "Cache save ${family}: outcome=${outcome}, key=${key}, elapsed=${elapsed}s"
+          }
+
+          {
+            echo "## Cache save summary"
+            echo
+            echo "Elapsed: ${elapsed}s"
+            echo
+            echo '```text'
+            summarize_save "downloads" "${CACHE_PREFIX_DL}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${{ steps.save-downloads.outcome }}"
+            summarize_save "toolchain" "${CACHE_PREFIX_TOOLCHAIN}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${{ steps.save-toolchain.outcome }}"
+            summarize_save "target" "${CACHE_PREFIX_TARGET}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${{ steps.save-target.outcome }}"
+            summarize_save "feeds" "${CACHE_PREFIX_FEEDS}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${{ steps.save-feeds.outcome }}"
+            summarize_save "ccache" "${CACHE_PREFIX_CCACHE}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${{ steps.save-ccache.outcome }}"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Prune old downloads caches
+        if: success() && steps.save-downloads.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          start_epoch="$(date +%s)"
+          saved_key="${CACHE_PREFIX_DL}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bash scripts/prune_caches.sh dl "openwrt-dl-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-" "$saved_key" "${{ steps.save-downloads.outcome }}"
+          elapsed="$(($(date +%s) - start_epoch))"
+          echo "Cache prune downloads: outcome=${{ steps.save-downloads.outcome }}, key=${saved_key}, elapsed=${elapsed}s"
+
+      - name: Prune old toolchain caches
+        if: success() && steps.save-toolchain.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          start_epoch="$(date +%s)"
+          saved_key="${CACHE_PREFIX_TOOLCHAIN}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bash scripts/prune_caches.sh toolchain "openwrt-toolchain-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-" "$saved_key" "${{ steps.save-toolchain.outcome }}"
+          elapsed="$(($(date +%s) - start_epoch))"
+          echo "Cache prune toolchain: outcome=${{ steps.save-toolchain.outcome }}, key=${saved_key}, elapsed=${elapsed}s"
+
+      - name: Prune old target caches
+        if: success() && steps.save-target.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          start_epoch="$(date +%s)"
+          saved_key="${CACHE_PREFIX_TARGET}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bash scripts/prune_caches.sh target "openwrt-target-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-" "$saved_key" "${{ steps.save-target.outcome }}"
+          elapsed="$(($(date +%s) - start_epoch))"
+          echo "Cache prune target: outcome=${{ steps.save-target.outcome }}, key=${saved_key}, elapsed=${elapsed}s"
+
+      - name: Prune old feeds caches
+        if: success() && steps.save-feeds.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          start_epoch="$(date +%s)"
+          saved_key="${CACHE_PREFIX_FEEDS}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bash scripts/prune_caches.sh feeds "openwrt-feeds-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-" "$saved_key" "${{ steps.save-feeds.outcome }}"
+          elapsed="$(($(date +%s) - start_epoch))"
+          echo "Cache prune feeds: outcome=${{ steps.save-feeds.outcome }}, key=${saved_key}, elapsed=${elapsed}s"
+
+      - name: Prune old ccache caches
+        if: success() && env.USE_CCACHE == 'true' && steps.save-ccache.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          start_epoch="$(date +%s)"
+          saved_key="${CACHE_PREFIX_CCACHE}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bash scripts/prune_caches.sh ccache "openwrt-ccache-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-" "$saved_key" "${{ steps.save-ccache.outcome }}"
+          elapsed="$(($(date +%s) - start_epoch))"
+          echo "Cache prune ccache: outcome=${{ steps.save-ccache.outcome }}, key=${saved_key}, elapsed=${elapsed}s"
 
       - name: Upload firmware artifact
         if: env.OUTPUT_ARTIFACT == 'true'
@@ -279,6 +581,10 @@ jobs:
         if: env.OUTPUT_WEBDAV == 'true'
         id: upload_webdav
         continue-on-error: ${{ env.OUTPUT_ARTIFACT == 'true' }}
+        env:
+          WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
+          WEBDAV_USERNAME: ${{ secrets.WEBDAV_USERNAME }}
+          WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
