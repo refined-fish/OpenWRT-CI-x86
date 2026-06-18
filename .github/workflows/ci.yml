@@ -17,7 +17,6 @@ permissions:
 
 env:
   TZ: Asia/Shanghai
-  MIN_FREE_GB: "80"
 
 jobs:
   cache-context:
@@ -73,36 +72,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 按需清理磁盘空间
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "【按需清理磁盘空间】检查 runner 剩余空间，不足时清理预装组件。"
-          free_gb="$(df -BG --output=avail / | tail -n 1 | tr -dc '0-9')"
-          echo "【按需清理磁盘空间】清理前可用空间：${free_gb}G"
-          if [ "$free_gb" -ge "$MIN_FREE_GB" ]; then
-            echo "【按需清理磁盘空间】可用空间已满足 ${MIN_FREE_GB}G 要求，跳过清理。"
-            df -h
-            exit 0
-          fi
-
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
-          if [ -n "${AGENT_TOOLSDIRECTORY:-}" ]; then
-            sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
-          fi
-          if command -v docker >/dev/null 2>&1; then
-            docker system prune -af || true
-          fi
-          sudo -E apt-get -yqq autoremove --purge
-          sudo -E apt-get -yqq autoclean
-          sudo -E apt-get -yqq clean
-
-          free_after="$(df -BG --output=avail / | tail -n 1 | tr -dc '0-9')"
-          echo "【按需清理磁盘空间】清理后可用空间：${free_after}G"
-          if [ "$free_after" -lt "$MIN_FREE_GB" ]; then
-            echo "::warning::【按需清理磁盘空间】可用空间仍低于 ${MIN_FREE_GB}G。"
-          fi
-          df -h
+      - name: 清理磁盘空间
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
 
       - name: 安装 OpenWrt 编译依赖
         env:
@@ -279,27 +258,9 @@ jobs:
             openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
 
-      - name: 恢复后磁盘检查
-        id: post-restore-disk
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "【恢复后磁盘检查】检查缓存恢复后是否还有足够空间继续可选缓存步骤。"
-          free_gb="$(df -BG --output=avail / | tail -n 1 | tr -dc '0-9')"
-          echo "【恢复后磁盘检查】恢复后可用空间：${free_gb}G"
-          if [ "$free_gb" -lt "$MIN_FREE_GB" ]; then
-            echo "CACHE_PRESSURE_MODE=degraded" >> "$GITHUB_ENV"
-            echo "cache_pressure_mode=degraded" >> "$GITHUB_OUTPUT"
-            echo "::warning::【恢复后磁盘检查】可用空间 ${free_gb}G 低于 ${MIN_FREE_GB}G，将跳过可选 target/feed 缓存，源码、feeds、配置和编译仍会继续。"
-          else
-            echo "CACHE_PRESSURE_MODE=normal" >> "$GITHUB_ENV"
-            echo "cache_pressure_mode=normal" >> "$GITHUB_OUTPUT"
-            echo "【恢复后磁盘检查】可用空间满足 ${MIN_FREE_GB}G 要求。"
-          fi
-
       - name: 恢复目标编译缓存
         id: restore-target
-        if: env.CLEAN_CACHE != 'true' && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
+        if: env.CLEAN_CACHE != 'true'
         continue-on-error: true
         uses: actions/cache/restore@v4
         with:
@@ -314,7 +275,7 @@ jobs:
 
       - name: 恢复 feeds 缓存
         id: restore-feeds
-        if: env.CLEAN_CACHE != 'true' && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
+        if: env.CLEAN_CACHE != 'true'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -463,7 +424,7 @@ jobs:
 
       - name: 保存目标编译缓存
         id: save-target
-        if: success() && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
+        if: success()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
@@ -474,7 +435,7 @@ jobs:
 
       - name: 保存 feeds 缓存
         id: save-feeds
-        if: success() && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
+        if: success()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
