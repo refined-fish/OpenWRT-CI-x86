@@ -25,31 +25,33 @@ jobs:
     outputs:
       target_slug: ${{ steps.parse.outputs.target_slug }}
     steps:
-      - name: Checkout CI repository
+      - name: 检出 CI 仓库
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Install config parser dependency
+      - name: 安装配置解析依赖
         env:
           DEBIAN_FRONTEND: noninteractive
         shell: bash
         run: |
           set -euo pipefail
+          echo "【安装配置解析依赖】安装 python3-yaml，用于解析 config.yaml。"
           sudo -E apt-get -yqq update
           sudo -E apt-get -yqq install python3-yaml
 
-      - name: Parse cache target
+      - name: 解析缓存目标
         id: parse
         shell: bash
         run: |
           set -euo pipefail
+          echo "【解析缓存目标】从 config.yaml 提取 TARGET_SLUG，供并发分组和缓存键使用。"
           env_file="$(mktemp)"
           trap 'rm -f "$env_file"' EXIT
           python3 scripts/parse_config.py config.yaml "$env_file" >/dev/null
           target_slug="$(sed -n 's/^TARGET_SLUG=//p' "$env_file" | tail -n 1)"
           if [ -z "$target_slug" ]; then
-            echo "TARGET_SLUG was not emitted by config parser" >&2
+            echo "【解析缓存目标】配置解析器没有输出 TARGET_SLUG。" >&2
             exit 1
           fi
           echo "target_slug=$target_slug" >> "$GITHUB_OUTPUT"
@@ -59,7 +61,6 @@ jobs:
     concurrency:
       group: openwrt-ci-${{ github.workflow }}-${{ github.ref }}-${{ needs.cache-context.outputs.target_slug }}
       cancel-in-progress: false
-      queue: max
     runs-on: ubuntu-latest
     env:
       WORKSPACE_DIR: ${{ github.workspace }}
@@ -67,19 +68,20 @@ jobs:
       CLEAN_CACHE: ${{ inputs.clean_cache }}
 
     steps:
-      - name: Checkout CI repository
+      - name: 检出 CI 仓库
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Free disk space when needed
+      - name: 按需清理磁盘空间
         shell: bash
         run: |
           set -euo pipefail
+          echo "【按需清理磁盘空间】检查 runner 剩余空间，不足时清理预装组件。"
           free_gb="$(df -BG --output=avail / | tail -n 1 | tr -dc '0-9')"
-          echo "Available disk before cleanup: ${free_gb}G"
+          echo "【按需清理磁盘空间】清理前可用空间：${free_gb}G"
           if [ "$free_gb" -ge "$MIN_FREE_GB" ]; then
-            echo "Disk space is enough for this build; skip cleanup."
+            echo "【按需清理磁盘空间】可用空间已满足 ${MIN_FREE_GB}G 要求，跳过清理。"
             df -h
             exit 0
           fi
@@ -96,18 +98,19 @@ jobs:
           sudo -E apt-get -yqq clean
 
           free_after="$(df -BG --output=avail / | tail -n 1 | tr -dc '0-9')"
-          echo "Available disk after cleanup: ${free_after}G"
+          echo "【按需清理磁盘空间】清理后可用空间：${free_after}G"
           if [ "$free_after" -lt "$MIN_FREE_GB" ]; then
-            echo "::warning::Available disk is still below ${MIN_FREE_GB}G."
+            echo "::warning::【按需清理磁盘空间】可用空间仍低于 ${MIN_FREE_GB}G。"
           fi
           df -h
 
-      - name: Install OpenWrt build dependencies
+      - name: 安装 OpenWrt 编译依赖
         env:
           DEBIAN_FRONTEND: noninteractive
         shell: bash
         run: |
           set -euo pipefail
+          echo "【安装 OpenWrt 编译依赖】安装编译工具链、Python、压缩和缓存相关依赖。"
           sudo -E apt-get -yqq update
           sudo -E apt-get -yqq install \
             build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
@@ -116,17 +119,19 @@ jobs:
             qemu-utils ccache subversion swig time
           sudo -E timedatectl set-timezone "$TZ" || true
 
-      - name: Normalize scripts
+      - name: 规范化脚本文件
         shell: bash
         run: |
           set -euo pipefail
+          echo "【规范化脚本文件】修正 shell 脚本换行符和可执行权限。"
           find scripts -type f -name '*.sh' -exec dos2unix {} \;
           find scripts -type f -name '*.sh' -exec chmod +x {} \;
 
-      - name: Enable swap
+      - name: 启用交换分区
         shell: bash
         run: |
           set -euo pipefail
+          echo "【启用交换分区】创建 8G swapfile，降低编译阶段内存不足风险。"
           sudo swapoff -a || true
           sudo fallocate -l 8G /swapfile
           sudo chmod 600 /swapfile
@@ -134,16 +139,18 @@ jobs:
           sudo swapon /swapfile
           free -h
 
-      - name: Parse config.yaml
+      - name: 解析 config.yaml
         shell: bash
         run: |
           set -euo pipefail
+          echo "【解析 config.yaml】将仓库配置转换为 GitHub Actions 环境变量。"
           python3 scripts/parse_config.py config.yaml "$GITHUB_ENV"
 
-      - name: Compute cache digest
+      - name: 计算缓存摘要
         shell: bash
         run: |
           set -euo pipefail
+          echo "【计算缓存摘要】根据配置、包列表和关键脚本生成缓存摘要。"
           digest_files=(
             "config.yaml"
             "applist"
@@ -173,9 +180,9 @@ jobs:
             echo "CACHE_PREFIX_CCACHE=openwrt-ccache-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-${digest}-"
             echo "CACHE_PREFIX_FEEDS=openwrt-feeds-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-${digest}-"
           } >> "$GITHUB_ENV"
-          echo "Cache digest: $digest"
+          echo "【计算缓存摘要】缓存摘要：$digest"
 
-      - name: Validate output settings
+      - name: 校验输出设置
         env:
           WEBDAV_URL: ${{ secrets.WEBDAV_URL }}
           WEBDAV_USERNAME: ${{ secrets.WEBDAV_USERNAME }}
@@ -183,30 +190,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "【校验输出设置】确认至少启用一种固件输出方式，并检查 WebDAV 必要参数。"
           if [ "${OUTPUT_ARTIFACT:-true}" != "true" ] && [ "${OUTPUT_WEBDAV:-false}" != "true" ]; then
-            echo "At least one output method must be enabled"
+            echo "【校验输出设置】至少需要启用一种输出方式。"
             exit 1
           fi
           if [ "${OUTPUT_WEBDAV:-false}" = "true" ]; then
             if [ -z "${WEBDAV_PATH:-}" ] || [ -z "${WEBDAV_URL:-}" ] || [ -z "${WEBDAV_USERNAME:-}" ] || [ -z "${WEBDAV_PASSWORD:-}" ]; then
-              echo "output.webdav is enabled, but WEBDAV_URL/WEBDAV_USERNAME/WEBDAV_PASSWORD or upload.webdav_path is missing"
+              echo "【校验输出设置】已启用 WebDAV，但缺少 WEBDAV_URL/WEBDAV_USERNAME/WEBDAV_PASSWORD 或 upload.webdav_path。"
               exit 1
             fi
           fi
 
-      - name: Clone OpenWrt source
+      - name: 克隆 OpenWrt 源码
         shell: bash
         run: |
           set -euo pipefail
+          echo "【克隆 OpenWrt 源码】拉取并准备 OpenWrt/ImmortalWrt 源码树。"
           bash scripts/prepare_source.sh
 
-      - name: Clean same-target caches on demand
+      - name: 按需清理同目标缓存
         if: env.CLEAN_CACHE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          echo "【按需清理同目标缓存】clean_cache=true，删除当前源码、分支和目标对应的旧缓存。"
           prefixes=(
             "openwrt-dl-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
             "openwrt-toolchain-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
@@ -215,10 +225,10 @@ jobs:
             "openwrt-feeds-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-"
           )
           for prefix in "${prefixes[@]}"; do
-            echo "Deleting caches with prefix: $prefix"
+            echo "【按需清理同目标缓存】正在查找并删除前缀为 $prefix 的缓存。"
             tmp_list="$(mktemp)"
             if ! gh cache list --key "$prefix" --limit 1000 --json id,key --jq '.[] | [.id, .key] | @tsv' > "$tmp_list"; then
-              echo "::warning::Unable to list caches for prefix ${prefix}; continuing."
+              echo "::warning::【按需清理同目标缓存】无法列出前缀 ${prefix} 的缓存，继续处理其他缓存。"
               rm -f "$tmp_list"
               continue
             fi
@@ -228,19 +238,20 @@ jobs:
                 "$prefix"*) ;;
                 *) continue ;;
               esac
-              echo "Deleting cache: $cache_key"
+              echo "【按需清理同目标缓存】删除缓存：$cache_key"
               gh cache delete "$cache_id" || true
             done < "$tmp_list"
             rm -f "$tmp_list"
           done
 
-      - name: Mark cache restore start
+      - name: 记录缓存恢复开始时间
         shell: bash
         run: |
           set -euo pipefail
+          echo "【记录缓存恢复开始时间】记录缓存恢复阶段的起始时间。"
           echo "CACHE_RESTORE_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
 
-      - name: Restore downloads cache
+      - name: 恢复下载缓存
         id: restore-downloads
         if: env.CLEAN_CACHE != 'true'
         uses: actions/cache/restore@v4
@@ -252,7 +263,7 @@ jobs:
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
 
-      - name: Restore toolchain cache
+      - name: 恢复工具链缓存
         id: restore-toolchain
         if: env.CLEAN_CACHE != 'true'
         uses: actions/cache/restore@v4
@@ -268,24 +279,25 @@ jobs:
             openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
 
-      - name: Post-restore disk check
+      - name: 恢复后磁盘检查
         id: post-restore-disk
         shell: bash
         run: |
           set -euo pipefail
+          echo "【恢复后磁盘检查】检查缓存恢复后是否还有足够空间继续可选缓存步骤。"
           free_gb="$(df -BG --output=avail / | tail -n 1 | tr -dc '0-9')"
-          echo "Post-restore available disk: ${free_gb}G"
+          echo "【恢复后磁盘检查】恢复后可用空间：${free_gb}G"
           if [ "$free_gb" -lt "$MIN_FREE_GB" ]; then
             echo "CACHE_PRESSURE_MODE=degraded" >> "$GITHUB_ENV"
             echo "cache_pressure_mode=degraded" >> "$GITHUB_OUTPUT"
-            echo "::warning::Post-restore disk space ${free_gb}G is below ${MIN_FREE_GB}G. Skipping optional target/feed cache work; required source, feeds update/install, config, and build steps will continue."
+            echo "::warning::【恢复后磁盘检查】可用空间 ${free_gb}G 低于 ${MIN_FREE_GB}G，将跳过可选 target/feed 缓存，源码、feeds、配置和编译仍会继续。"
           else
             echo "CACHE_PRESSURE_MODE=normal" >> "$GITHUB_ENV"
             echo "cache_pressure_mode=normal" >> "$GITHUB_OUTPUT"
-            echo "Post-restore disk space is above ${MIN_FREE_GB}G."
+            echo "【恢复后磁盘检查】可用空间满足 ${MIN_FREE_GB}G 要求。"
           fi
 
-      - name: Restore target build cache
+      - name: 恢复目标编译缓存
         id: restore-target
         if: env.CLEAN_CACHE != 'true' && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
         continue-on-error: true
@@ -300,7 +312,7 @@ jobs:
             openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
             openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-
 
-      - name: Restore feeds cache
+      - name: 恢复 feeds 缓存
         id: restore-feeds
         if: env.CLEAN_CACHE != 'true' && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
         uses: actions/cache/restore@v4
@@ -312,7 +324,7 @@ jobs:
           restore-keys: |
             openwrt-feeds-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-
 
-      - name: Restore ccache
+      - name: 恢复 ccache 缓存
         id: restore-ccache
         if: env.CLEAN_CACHE != 'true' && env.USE_CCACHE == 'true'
         uses: actions/cache/restore@v4
@@ -323,7 +335,7 @@ jobs:
             openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-
             openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-
 
-      - name: Report cache restore summary
+      - name: 输出缓存恢复摘要
         env:
           RESTORE_DOWNLOADS_HIT: ${{ steps.restore-downloads.outputs.cache-hit }}
           RESTORE_DOWNLOADS_OUTCOME: ${{ steps.restore-downloads.outcome }}
@@ -343,6 +355,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "【输出缓存恢复摘要】汇总 downloads、toolchain、target、feeds 和 ccache 的恢复结果。"
           now="$(date +%s)"
           elapsed="$((now - ${CACHE_RESTORE_START_EPOCH:-now}))"
 
@@ -360,13 +373,13 @@ jobs:
                 *) status="unknown" ;;
               esac
             fi
-            echo "Cache restore ${family}: status=${status}, outcome=${outcome}, key=${key}, matched_key=${matched_key:-none}, elapsed=${elapsed}s"
+            echo "【输出缓存恢复摘要】${family}: 状态=${status}, 步骤结果=${outcome}, 目标键=${key}, 命中键=${matched_key:-none}, 耗时=${elapsed}s"
           }
 
           {
-            echo "## Cache restore summary"
+            echo "## 缓存恢复摘要"
             echo
-            echo "Elapsed: ${elapsed}s"
+            echo "耗时：${elapsed}s"
             echo
             echo '```text'
             summarize_restore "downloads" "${CACHE_PREFIX_DL}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${RESTORE_DOWNLOADS_HIT:-}" "${RESTORE_DOWNLOADS_OUTCOME:-skipped}" "${RESTORE_DOWNLOADS_MATCHED_KEY:-}"
@@ -377,51 +390,56 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Refresh restored toolchain cache
+      - name: 刷新已恢复的工具链缓存
         if: env.CLEAN_CACHE != 'true'
         shell: bash
         run: |
           set -euo pipefail
+          echo "【刷新已恢复的工具链缓存】刷新 host/toolchain stamp，避免恢复缓存后被误判为过期。"
           if [ -d "$OPENWRT_DIR/staging_dir" ]; then
             find "$OPENWRT_DIR/staging_dir" -type d -name stamp -not -path '*/target-*' -print0 | while IFS= read -r -d '' dir; do
               find "$dir" -type f -exec touch {} +
             done
             mkdir -p "$OPENWRT_DIR/tmp"
             echo 1 > "$OPENWRT_DIR/tmp/.build"
-            echo "Restored build cache refreshed"
+            echo "【刷新已恢复的工具链缓存】已刷新恢复的构建缓存。"
           else
-            echo "No restored build cache found"
+            echo "【刷新已恢复的工具链缓存】没有发现可刷新的构建缓存。"
           fi
 
-      - name: Prepare feeds and extra packages
+      - name: 准备 feeds 与额外包
         shell: bash
         run: |
           set -euo pipefail
+          echo "【准备 feeds 与额外包】更新 feeds、安装 feeds，并处理额外软件包。"
           bash scripts/prepare_feeds.sh
 
-      - name: Prepare .config
+      - name: 准备 .config
         shell: bash
         run: |
           set -euo pipefail
+          echo "【准备 .config】生成或采用现有 OpenWrt .config。"
           bash scripts/prepare_config.sh
 
-      - name: Build OpenWrt
+      - name: 编译 OpenWrt
         id: build_openwrt
         env:
           FILES_ZIP_URL: ${{ secrets.FILES_ZIP_URL }}
         shell: bash
         run: |
           set -euo pipefail
+          echo "【编译 OpenWrt】执行正式固件编译、文件注入和输出整理。"
           bash scripts/build_openwrt.sh
 
-      - name: Mark cache save start
+      - name: 记录缓存保存开始时间
         if: success()
         shell: bash
         run: |
           set -euo pipefail
+          echo "【记录缓存保存开始时间】记录缓存保存阶段的起始时间。"
           echo "CACHE_SAVE_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
 
-      - name: Save downloads cache
+      - name: 保存下载缓存
         id: save-downloads
         if: success()
         continue-on-error: true
@@ -430,7 +448,7 @@ jobs:
           path: ${{ env.OPENWRT_DIR }}/dl
           key: openwrt-dl-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Save toolchain cache
+      - name: 保存工具链缓存
         id: save-toolchain
         if: success()
         continue-on-error: true
@@ -443,7 +461,7 @@ jobs:
             ${{ env.OPENWRT_DIR }}/build_dir/toolchain-*
           key: openwrt-toolchain-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Save target build cache
+      - name: 保存目标编译缓存
         id: save-target
         if: success() && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
         continue-on-error: true
@@ -454,7 +472,7 @@ jobs:
             ${{ env.OPENWRT_DIR }}/build_dir/target-*
           key: openwrt-target-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Save feeds cache
+      - name: 保存 feeds 缓存
         id: save-feeds
         if: success() && env.CACHE_PRESSURE_MODE != 'degraded' && steps.post-restore-disk.outputs.cache_pressure_mode != 'degraded'
         continue-on-error: true
@@ -465,7 +483,7 @@ jobs:
             ${{ env.OPENWRT_DIR }}/package/feeds
           key: openwrt-feeds-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Save ccache
+      - name: 保存 ccache 缓存
         id: save-ccache
         if: success() && env.USE_CCACHE == 'true'
         continue-on-error: true
@@ -474,11 +492,12 @@ jobs:
           path: ${{ env.OPENWRT_DIR }}/.ccache
           key: openwrt-ccache-${{ env.SOURCE_REPO_SLUG }}-${{ env.SOURCE_BRANCH }}-${{ env.TARGET_SLUG }}-${{ env.CACHE_DIGEST }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Report cache save summary
+      - name: 输出缓存保存摘要
         if: success()
         shell: bash
         run: |
           set -euo pipefail
+          echo "【输出缓存保存摘要】汇总 downloads、toolchain、target、feeds 和 ccache 的保存结果。"
           now="$(date +%s)"
           elapsed="$((now - ${CACHE_SAVE_START_EPOCH:-now}))"
 
@@ -486,13 +505,13 @@ jobs:
             local family="$1"
             local key="$2"
             local outcome="$3"
-            echo "Cache save ${family}: outcome=${outcome}, key=${key}, elapsed=${elapsed}s"
+            echo "【输出缓存保存摘要】${family}: 步骤结果=${outcome}, 缓存键=${key}, 耗时=${elapsed}s"
           }
 
           {
-            echo "## Cache save summary"
+            echo "## 缓存保存摘要"
             echo
-            echo "Elapsed: ${elapsed}s"
+            echo "耗时：${elapsed}s"
             echo
             echo '```text'
             summarize_save "downloads" "${CACHE_PREFIX_DL}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "${{ steps.save-downloads.outcome }}"
@@ -503,72 +522,77 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Prune old downloads caches
+      - name: 清理旧下载缓存
         if: success() && steps.save-downloads.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          echo "【清理旧下载缓存】保留当前下载缓存，清理同目标的旧版本。"
           start_epoch="$(date +%s)"
           saved_key="${CACHE_PREFIX_DL}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           bash scripts/prune_caches.sh dl "openwrt-dl-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-" "$saved_key" "${{ steps.save-downloads.outcome }}"
           elapsed="$(($(date +%s) - start_epoch))"
-          echo "Cache prune downloads: outcome=${{ steps.save-downloads.outcome }}, key=${saved_key}, elapsed=${elapsed}s"
+          echo "【清理旧下载缓存】步骤结果=${{ steps.save-downloads.outcome }}, 保留键=${saved_key}, 耗时=${elapsed}s"
 
-      - name: Prune old toolchain caches
+      - name: 清理旧工具链缓存
         if: success() && steps.save-toolchain.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          echo "【清理旧工具链缓存】保留当前工具链缓存，清理同目标的旧版本。"
           start_epoch="$(date +%s)"
           saved_key="${CACHE_PREFIX_TOOLCHAIN}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           bash scripts/prune_caches.sh toolchain "openwrt-toolchain-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-" "$saved_key" "${{ steps.save-toolchain.outcome }}"
           elapsed="$(($(date +%s) - start_epoch))"
-          echo "Cache prune toolchain: outcome=${{ steps.save-toolchain.outcome }}, key=${saved_key}, elapsed=${elapsed}s"
+          echo "【清理旧工具链缓存】步骤结果=${{ steps.save-toolchain.outcome }}, 保留键=${saved_key}, 耗时=${elapsed}s"
 
-      - name: Prune old target caches
+      - name: 清理旧目标缓存
         if: success() && steps.save-target.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          echo "【清理旧目标缓存】保留当前目标编译缓存，清理同目标的旧版本。"
           start_epoch="$(date +%s)"
           saved_key="${CACHE_PREFIX_TARGET}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           bash scripts/prune_caches.sh target "openwrt-target-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-" "$saved_key" "${{ steps.save-target.outcome }}"
           elapsed="$(($(date +%s) - start_epoch))"
-          echo "Cache prune target: outcome=${{ steps.save-target.outcome }}, key=${saved_key}, elapsed=${elapsed}s"
+          echo "【清理旧目标缓存】步骤结果=${{ steps.save-target.outcome }}, 保留键=${saved_key}, 耗时=${elapsed}s"
 
-      - name: Prune old feeds caches
+      - name: 清理旧 feeds 缓存
         if: success() && steps.save-feeds.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          echo "【清理旧 feeds 缓存】保留当前 feeds 缓存，清理同目标的旧版本。"
           start_epoch="$(date +%s)"
           saved_key="${CACHE_PREFIX_FEEDS}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           bash scripts/prune_caches.sh feeds "openwrt-feeds-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-" "$saved_key" "${{ steps.save-feeds.outcome }}"
           elapsed="$(($(date +%s) - start_epoch))"
-          echo "Cache prune feeds: outcome=${{ steps.save-feeds.outcome }}, key=${saved_key}, elapsed=${elapsed}s"
+          echo "【清理旧 feeds 缓存】步骤结果=${{ steps.save-feeds.outcome }}, 保留键=${saved_key}, 耗时=${elapsed}s"
 
-      - name: Prune old ccache caches
+      - name: 清理旧 ccache 缓存
         if: success() && env.USE_CCACHE == 'true' && steps.save-ccache.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          echo "【清理旧 ccache 缓存】保留当前 ccache，清理同目标的旧版本。"
           start_epoch="$(date +%s)"
           saved_key="${CACHE_PREFIX_CCACHE}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           bash scripts/prune_caches.sh ccache "openwrt-ccache-${SOURCE_REPO_SLUG}-${SOURCE_BRANCH}-${TARGET_SLUG}-" "$saved_key" "${{ steps.save-ccache.outcome }}"
           elapsed="$(($(date +%s) - start_epoch))"
-          echo "Cache prune ccache: outcome=${{ steps.save-ccache.outcome }}, key=${saved_key}, elapsed=${elapsed}s"
+          echo "【清理旧 ccache 缓存】步骤结果=${{ steps.save-ccache.outcome }}, 保留键=${saved_key}, 耗时=${elapsed}s"
 
-      - name: Upload firmware artifact
+      - name: 上传固件制品
         if: env.OUTPUT_ARTIFACT == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -577,7 +601,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload firmware to WebDAV
+      - name: 上传固件到 WebDAV
         if: env.OUTPUT_WEBDAV == 'true'
         id: upload_webdav
         continue-on-error: ${{ env.OUTPUT_ARTIFACT == 'true' }}
@@ -588,16 +612,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "【上传固件到 WebDAV】开始上传 firmware-output 中的固件文件。"
           bash scripts/upload_webdav.sh
 
-      - name: Report WebDAV fallback
+      - name: 输出 WebDAV 回退提示
         if: env.OUTPUT_WEBDAV == 'true' && env.OUTPUT_ARTIFACT == 'true' && steps.upload_webdav.outcome == 'failure'
         shell: bash
         run: |
+          echo "【输出 WebDAV 回退提示】WebDAV 上传失败，但 artifact 输出已启用。"
           {
-            echo "## WebDAV upload failed"
+            echo "## WebDAV 上传失败"
             echo
-            echo "Firmware artifact has already been uploaded by GitHub Actions."
-            echo "Use the artifact named openwrt-${TARGET_SLUG}-${GITHUB_RUN_NUMBER} as fallback."
+            echo "固件制品已由 GitHub Actions 上传。"
+            echo "请改用名为 openwrt-${TARGET_SLUG}-${GITHUB_RUN_NUMBER} 的制品作为回退。"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::WebDAV upload failed; GitHub Actions artifact is available as fallback."
+          echo "::warning::【输出 WebDAV 回退提示】WebDAV 上传失败，GitHub Actions 制品可作为回退。"
