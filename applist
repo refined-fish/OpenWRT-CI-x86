@@ -12,6 +12,7 @@ luci-app-diskman
 luci-app-filemanager
 luci-app-ttyd
 luci-app-nikki
+luci-app-snmpd
 
 # 软件包
 nano
