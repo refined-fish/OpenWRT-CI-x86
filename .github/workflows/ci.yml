@@ -19,46 +19,9 @@ env:
   TZ: Asia/Shanghai
 
 jobs:
-  cache-context:
-    runs-on: ubuntu-latest
-    outputs:
-      target_slug: ${{ steps.parse.outputs.target_slug }}
-    steps:
-      - name: 检出 CI 仓库
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: 安装配置解析依赖
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "【安装配置解析依赖】安装 python3-yaml，用于解析 config.yaml。"
-          sudo -E apt-get -yqq update
-          sudo -E apt-get -yqq install python3-yaml
-
-      - name: 解析缓存目标
-        id: parse
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "【解析缓存目标】从 config.yaml 提取 TARGET_SLUG，供并发分组和缓存键使用。"
-          env_file="$(mktemp)"
-          trap 'rm -f "$env_file"' EXIT
-          python3 scripts/parse_config.py config.yaml "$env_file" >/dev/null
-          target_slug="$(sed -n 's/^TARGET_SLUG=//p' "$env_file" | tail -n 1)"
-          if [ -z "$target_slug" ]; then
-            echo "【解析缓存目标】配置解析器没有输出 TARGET_SLUG。" >&2
-            exit 1
-          fi
-          echo "target_slug=$target_slug" >> "$GITHUB_OUTPUT"
-
   build:
-    needs: cache-context
     concurrency:
-      group: openwrt-ci-${{ github.workflow }}-${{ github.ref }}-${{ needs.cache-context.outputs.target_slug }}
+      group: openwrt-ci-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     env:
@@ -133,6 +96,8 @@ jobs:
           digest_files=(
             "config.yaml"
             "applist"
+            "scripts/apply_files.sh"
+            "scripts/patch_files.sh"
             "scripts/prepare_feeds.sh"
             "scripts/prepare_config.sh"
             "scripts/build_openwrt.sh"

@@ -8,6 +8,7 @@ cd "$OPENWRT_DIR"
 
 python3 - <<'PY'
 from pathlib import Path
+import re
 import yaml
 
 workspace = Path(__import__('os').environ['WORKSPACE_DIR'])
@@ -22,7 +23,7 @@ lines = []
 for feed in feeds:
     if not isinstance(feed, dict):
         continue
-    name = str(feed.get('name') or '').strip()
+    name = re.sub(r'[^A-Za-z0-9_]+', '_', str(feed.get('name') or '').strip()).strip('_')
     url = str(feed.get('url') or '').strip()
     branch = str(feed.get('branch') or '').strip()
     if not name or not url:

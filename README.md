@@ -131,6 +131,13 @@ usr/bin/custom-script
 
 zip 解压使用 Python 实现，会校验 zip、规避路径穿越、尝试处理 UTF-8/GBK 文件名，并把解压出的普通文件赋予可执行权限。
 
+每个 files 变体解压到 OpenWrt 源码的 `files/` 后，会执行 `scripts/patch_files.sh`。触发条件来自 `applist`：
+
+- 包含 `luci-app-nikki` 时，下载 mihomo、geoip/geosite、Model.bin 和 zashboard 到 `files/etc/nikki/run/`、`files/usr/libexec/`。
+- 包含 `luci-app-easytier` 时，下载 EasyTier 稳定版二进制到 `files/usr/bin/`。
+
+这些下载内容会缓存在 `files-patches/`，多个 files 变体复用同一份下载结果。
+
 ## 缓存
 
 这个 workflow 会缓存 5 类内容：
