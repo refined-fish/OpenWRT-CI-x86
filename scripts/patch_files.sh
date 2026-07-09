@@ -25,18 +25,18 @@ download() {
 asset_url() {
   local api_url="$1"
   local pattern="$2"
-  local fallback="$3"
-  local json url
-  json="$(curl -fsSL "$api_url" 2>/dev/null || true)"
-  if [ -n "$json" ]; then
-    url="$(JSON="$json" python3 - "$pattern" <<'PY' 2>/dev/null || true
+  local fallback="${3:-}"
+  local json_file url
+  json_file="$(mktemp)"
+  if curl -fsSL "$api_url" -o "$json_file" 2>/dev/null; then
+    url="$(python3 - "$pattern" "$json_file" <<'PY' 2>/dev/null || true
 import json
-import os
 import re
 import sys
 
 pattern = re.compile(sys.argv[1])
-data = json.loads(os.environ["JSON"])
+with open(sys.argv[2], encoding="utf-8") as fh:
+    data = json.load(fh)
 for asset in data.get("assets", []):
     if pattern.search(asset.get("name", "")):
         print(asset.get("browser_download_url", ""))
@@ -44,11 +44,18 @@ for asset in data.get("assets", []):
 PY
 )"
     if [ -n "$url" ]; then
+      rm -f "$json_file"
       printf '%s\n' "$url"
       return 0
     fi
   fi
-  printf '%s\n' "$fallback"
+  rm -f "$json_file"
+  if [ -n "$fallback" ]; then
+    printf '%s\n' "$fallback"
+    return 0
+  fi
+  echo "No release asset matched $pattern from $api_url" >&2
+  return 1
 }
 
 copy_overlay() {
@@ -79,13 +86,6 @@ easytier_web_name() {
   esac
 }
 
-mihomo_fallback_url() {
-  case "$(mihomo_arch)" in
-    amd64) printf 'https://github.com/vernesong/mihomo/releases/download/Prerelease-Alpha/mihomo-linux-amd64-v2-go123-alpha-smart-1383218.gz' ;;
-    *) printf 'https://github.com/vernesong/mihomo/releases/download/Prerelease-Alpha/mihomo-linux-arm64-alpha-smart-19c497f.gz' ;;
-  esac
-}
-
 prepare_nikki() {
   local cache="$PATCH_CACHE_DIR/nikki"
   local done_file="$cache/.done"
@@ -102,8 +102,7 @@ prepare_nikki() {
 
   url="$(asset_url \
     "https://api.github.com/repos/vernesong/mihomo/releases/tags/Prerelease-Alpha" \
-    "mihomo-linux-${arch}.*smart.*[.]gz$" \
-    "$(mihomo_fallback_url)")"
+    "mihomo-linux-${arch}.*smart.*[.]gz$")"
   download "$url" "$tmp/mihomo.gz"
   gzip -dc "$tmp/mihomo.gz" > "$tmp/root/usr/libexec/mihomo"
   chmod 755 "$tmp/root/usr/libexec/mihomo"
