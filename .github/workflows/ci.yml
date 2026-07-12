@@ -35,17 +35,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 清理磁盘空间
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: false
-
       - name: 安装 OpenWrt 编译依赖
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -98,6 +87,7 @@ jobs:
             "applist"
             "scripts/apply_files.sh"
             "scripts/patch_files.sh"
+            "scripts/prepare_source.sh"
             "scripts/prepare_feeds.sh"
             "scripts/prepare_config.sh"
             "scripts/build_openwrt.sh"

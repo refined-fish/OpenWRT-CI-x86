@@ -114,6 +114,8 @@ upload:
 - 写入 `image` 中的 rootfs、引导和虚拟化镜像选项。
 - 最后执行 `make defconfig` 补全依赖。
 
+`make defconfig` 后会确认请求的设备 profile 仍为 `y`。设备 symbol 被上游 Kconfig 删除时，workflow 会在正式编译前失败并指出缺失设备。
+
 `applist` 支持空行和 `#` 注释。
 
 ## files.zip
@@ -150,7 +152,7 @@ zip 解压使用 Python 实现，会校验 zip、规避路径穿越、尝试处�
 | `openwrt-feeds-*` | `feeds`、`package/feeds` | feeds、`extra_packages`、源码分支或 target 变化时 |
 | `openwrt-ccache-*` | `.ccache` | 源码、target、编译参数变化时；仅在 `build.use_ccache` 启用时使用 |
 
-编译前会固定调用社区磁盘清理 action 释放 GitHub runner 空间；缓存恢复阶段不再按剩余空间跳过 `target` 或 `feeds` 缓存。
+缓存恢复阶段不会按剩余空间跳过 `target` 或 `feeds` 缓存。当前 GitHub runner 空间足以完成本项目编译，因此不额外运行磁盘清理 action。
 
 ### 先看结论
 
@@ -193,6 +195,8 @@ zip 解压使用 Python 实现，会校验 zip、规避路径穿越、尝试处�
 - 这里不缓存最终固件、`bin/targets` 输出、artifact 包或 WebDAV 上传结果。
 
 ## 上传
+
+固件筛选支持目标发布的 `.bin`、`.ubi` 和常见虚拟磁盘格式，并继续排除 kernel、rootfs、initramfs、manifest 等非发布文件。`firmware-list.txt` 每行依次记录 files 变体、设备 symbol、大小和文件名；请求的设备必须至少有一个可发布固件，否则 workflow 失败且不会上传不完整 artifact。x86 单设备构建直接把所选固件归入该 profile，不依赖固件文件名包含设备 symbol。
 
 `artifact` 启用时，固件上传为 GitHub Actions artifact，保留 14 天。
 

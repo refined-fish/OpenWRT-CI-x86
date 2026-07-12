@@ -11,7 +11,7 @@ CONFIG_FILE="$WORKSPACE_DIR/config/.config"
 TARGET_CONFIG="$OPENWRT_DIR/.config"
 
 openwrt_make() {
-  env -u TARGET_ARCH make "$@"
+  env -u TARGET_ARCH -u TARGET_DEVICES make "$@"
 }
 
 append_bool_config() {
@@ -34,6 +34,15 @@ append_if_symbol_exists() {
   fi
 }
 
+target_device_config_symbol() {
+  local device_symbol="$1"
+  if [[ "$TARGET_ARCH" == "x86" || "$TARGET_ARCH" == "x86_64" ]]; then
+    echo "CONFIG_TARGET_${TARGET_ARCH}_${TARGET_SUBTARGET_SYMBOL}_DEVICE_${device_symbol}"
+  else
+    echo "CONFIG_TARGET_DEVICE_${TARGET_ARCH}_${TARGET_SUBTARGET_SYMBOL}_DEVICE_${device_symbol}"
+  fi
+}
+
 cd "$OPENWRT_DIR"
 
 if [ -f "$CONFIG_FILE" ]; then
@@ -53,10 +62,10 @@ else
       echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y"
     } >> "$TARGET_CONFIG"
     for device_symbol in ${TARGET_DEVICE_SYMBOLS:-}; do
-      echo "CONFIG_TARGET_${TARGET_ARCH}_${TARGET_SUBTARGET_SYMBOL}_DEVICE_${device_symbol}=y" >> "$TARGET_CONFIG"
+      echo "$(target_device_config_symbol "$device_symbol")=y" >> "$TARGET_CONFIG"
     done
   else
-    echo "CONFIG_TARGET_${TARGET_ARCH}_${TARGET_SUBTARGET_SYMBOL}_DEVICE_${TARGET_DEVICE_SYMBOL}=y" >> "$TARGET_CONFIG"
+    echo "$(target_device_config_symbol "$TARGET_DEVICE_SYMBOL")=y" >> "$TARGET_CONFIG"
   fi
 
   if [ "${BUILD_LANGUAGE:-zh-cn}" = "zh-cn" ]; then
@@ -113,3 +122,14 @@ if ! openwrt_make defconfig; then
   echo "make defconfig failed; retrying with single-thread verbose output"
   openwrt_make -j1 V=s defconfig
 fi
+
+missing_device=false
+for device_symbol in ${TARGET_DEVICE_SYMBOLS:-}; do
+  config_symbol="$(target_device_config_symbol "$device_symbol")"
+  if ! grep -qx "${config_symbol}=y" "$TARGET_CONFIG"; then
+    echo "Requested device was removed by make defconfig: $config_symbol" >&2
+    grep -F "$device_symbol" tmp/.targetinfo tmp/.config-target.in 2>/dev/null || true
+    missing_device=true
+  fi
+done
+[ "$missing_device" = false ] || exit 1

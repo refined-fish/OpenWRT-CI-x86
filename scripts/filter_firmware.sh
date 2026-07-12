@@ -13,6 +13,9 @@ if [ ! -d "$TARGETS_DIR" ]; then
   exit 1
 fi
 
+echo "Target firmware files before filtering:"
+find "$TARGETS_DIR" -mindepth 3 -maxdepth 3 -type f | sort
+
 is_blocked() {
   local name="$1"
   case "$name" in
@@ -42,9 +45,13 @@ is_blocked() {
 is_firmware() {
   local name="$1"
   case "$name" in
-    *sysupgrade*.bin|*sysupgrade*.img|*sysupgrade*.img.gz|*factory*.bin|*factory*.img|*factory*.img.gz|*combined*.img|*combined*.img.gz|*.efi|*.vmdk|*.vdi|*.qcow2|*.vhdx|*.img.gz|*.bin) return 0 ;;
+    *sysupgrade*.bin|*sysupgrade*.img|*sysupgrade*.img.gz|*factory*.bin|*factory*.img|*factory*.img.gz|*combined*.img|*combined*.img.gz|*.efi|*.vmdk|*.vdi|*.qcow2|*.vhdx|*.img.gz|*.bin|*.ubi) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+normalize_name() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '_-'
 }
 
 variant_name="${FILES_VARIANT_NAME:-default}"
@@ -53,6 +60,11 @@ manifest_file="$OUTPUT_DIR/firmware-list.txt"
 info_file="$OUTPUT_DIR/build-info.txt"
 touch "$manifest_file"
 count=0
+requested_devices=(${TARGET_DEVICE_SYMBOLS:-})
+declare -A device_counts=()
+for device_symbol in "${requested_devices[@]}"; do
+  device_counts["$device_symbol"]=0
+done
 
 while IFS= read -r -d '' file; do
   name="$(basename "$file")"
@@ -61,19 +73,50 @@ while IFS= read -r -d '' file; do
     continue
   fi
   if is_firmware "$name"; then
+    firmware_device="${TARGET_DEVICE_SYMBOL:-unknown}"
+    if [ "${TARGET_MULTI_PROFILE:-false}" = "true" ]; then
+      firmware_device=""
+      matched_length=0
+      normalized_name="$(normalize_name "$name")"
+      for device_symbol in "${requested_devices[@]}"; do
+        normalized_device="$(normalize_name "$device_symbol")"
+        if [[ "$normalized_name" == *"$normalized_device"* ]] && [ "${#normalized_device}" -gt "$matched_length" ]; then
+          firmware_device="$device_symbol"
+          matched_length="${#normalized_device}"
+        fi
+      done
+      if [ -z "$firmware_device" ]; then
+        echo "Skip firmware for unrequested device: $name"
+        continue
+      fi
+    elif [ "${#requested_devices[@]}" -gt 0 ]; then
+      firmware_device="${requested_devices[0]}"
+    fi
     output_name="$name"
     if [ -n "$variant_prefix" ]; then
       output_name="$variant_prefix-$name"
     fi
     cp -f "$file" "$OUTPUT_DIR/$output_name"
     size="$(du -h "$file" | cut -f 1)"
-    printf '%s\t%s\t%s\n' "$variant_name" "$size" "$output_name" >> "$manifest_file"
+    printf '%s\t%s\t%s\t%s\n' "$variant_name" "$firmware_device" "$size" "$output_name" >> "$manifest_file"
     echo "Selected firmware: $output_name"
     count=$((count + 1))
+    if [ "${#requested_devices[@]}" -gt 0 ]; then
+      device_counts["$firmware_device"]=$((device_counts["$firmware_device"] + 1))
+    fi
   else
     echo "Skip unmatched file: $name"
   fi
-done < <(find "$TARGETS_DIR" -maxdepth 5 -type f -print0)
+done < <(find "$TARGETS_DIR" -mindepth 3 -maxdepth 3 -type f -print0)
+
+missing_device=false
+for device_symbol in "${requested_devices[@]}"; do
+  if [ "${device_counts[$device_symbol]}" -eq 0 ]; then
+    echo "Missing release firmware for requested device: $device_symbol" >&2
+    missing_device=true
+  fi
+done
+[ "$missing_device" = false ] || exit 1
 
 if [ -f "$OPENWRT_DIR/.config" ]; then
   cp -f "$OPENWRT_DIR/.config" "$OUTPUT_DIR/build.config"
@@ -102,7 +145,7 @@ fi
 
 if [ "$count" -eq 0 ]; then
   echo "No release firmware selected for variant: $variant_name"
-  find "$TARGETS_DIR" -maxdepth 5 -type f | sort
+  find "$TARGETS_DIR" -mindepth 3 -maxdepth 3 -type f | sort
   exit 1
 fi
 

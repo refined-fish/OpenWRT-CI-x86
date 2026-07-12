@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$OPENWRT_DIR"
 
 openwrt_make() {
-  env -u TARGET_ARCH make "$@"
+  env -u TARGET_ARCH -u TARGET_DEVICES make "$@"
 }
 
 print_machine_info() {

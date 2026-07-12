@@ -58,7 +58,7 @@ def map_subtarget(arch, subtarget):
 def map_device(arch, device):
     if arch == "x86":
         return X86_DEVICES.get(device, slugify(device).replace("-", "_"))
-    return device.replace("-", "_").replace(" ", "_")
+    return device.replace(" ", "_")
 
 
 def main():

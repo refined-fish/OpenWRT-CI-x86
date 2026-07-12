@@ -67,8 +67,8 @@ else:
     print('No custom feeds configured')
 PY
 
-./scripts/feeds update -a
-./scripts/feeds install -a
+env -u TARGET_ARCH -u TARGET_DEVICES ./scripts/feeds update -a
+env -u TARGET_ARCH -u TARGET_DEVICES ./scripts/feeds install -a
 
 python3 - <<'PY' > "$WORKSPACE_DIR/extra-packages.tsv"
 from pathlib import PurePosixPath
