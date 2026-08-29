@@ -13,6 +13,7 @@ luci-app-filemanager
 luci-app-ttyd
 luci-app-nikki
 #luci-app-snmpd
+luci-app-ruijie-auth
 
 # 软件包
 nano
