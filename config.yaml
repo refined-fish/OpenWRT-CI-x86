@@ -13,6 +13,9 @@ feeds:
   - name: nikki
     url: https://github.com/nikkinikki-org/OpenWrt-nikki
     branch: main
+  - name: ruijie-auth
+    url: https://github.com/refined-fish/luci-app-ruijie-auth
+    branch: main
 
 extra_packages:
   - name: easytier
