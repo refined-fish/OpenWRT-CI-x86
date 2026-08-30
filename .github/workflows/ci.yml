@@ -86,7 +86,6 @@ jobs:
             "config.yaml"
             "applist"
             "scripts/apply_files.sh"
-            "scripts/patch_files.sh"
             "scripts/prepare_source.sh"
             "scripts/prepare_feeds.sh"
             "scripts/prepare_config.sh"

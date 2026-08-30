@@ -48,14 +48,6 @@ cleanup_path_permissions() {
   fi
 }
 
-run_files_patches() {
-  local patch_script="$WORKSPACE_DIR/scripts/patch_files.sh"
-  if [ -x "$patch_script" ]; then
-    bash "$patch_script"
-    cleanup_path_permissions "$OPENWRT_DIR/files"
-  fi
-}
-
 download_file() {
   local url="$1"
   local output="$2"
@@ -271,14 +263,12 @@ apply_variant() {
     rm -rf "$OPENWRT_DIR/files"
     mkdir -p "$OPENWRT_DIR/files"
     echo "No custom files for variant: $variant_name"
-    run_files_patches
     return 0
   fi
 
   echo "Applying files variant: $variant_name"
   extract_zip_to_files "$zip_path" "$OPENWRT_DIR/files"
   cleanup_path_permissions "$OPENWRT_DIR/files"
-  run_files_patches
   echo "Custom files applied to $OPENWRT_DIR/files"
 }
 
