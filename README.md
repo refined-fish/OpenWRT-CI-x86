@@ -193,7 +193,7 @@ workflow 不会根据 `applist` 自动下载或补充固件根目录文件。mih
 
 固件筛选支持目标发布的 `.bin`、`.ubi` 和常见虚拟磁盘格式，并继续排除 kernel、rootfs、initramfs、manifest 等非发布文件。`firmware-list.txt` 每行依次记录 files 变体、设备 symbol、大小和文件名；请求的设备必须至少有一个可发布固件，否则 workflow 失败且不会上传不完整 artifact。x86 单设备构建直接把所选固件归入该 profile，不依赖固件文件名包含设备 symbol。
 
-`artifact` 启用时，固件上传为 GitHub Actions artifact，保留 14 天。
+`artifact` 启用时，`firmware-output/` 中的每个文件都会作为独立的 GitHub Actions artifact 上传，保留 14 天，可按需选择下载。artifact 名称包含目标和原文件名；多 files 变体的固件原文件名会带上变体名前缀，避免同名并便于区分。workflow 内部用于跨 job 传输的临时 artifact 会在独立制品发布成功后自动删除。
 
 `webdav` 启用时，固件会先打包成 `tar.zst`，再上传到：
 

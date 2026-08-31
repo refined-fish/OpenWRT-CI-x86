@@ -20,6 +20,10 @@ env:
 
 jobs:
   build:
+    outputs:
+      artifact_files: ${{ steps.artifact_manifest.outputs.files }}
+      transfer_artifact_name: ${{ steps.artifact_manifest.outputs.transfer_name }}
+      transfer_artifact_id: ${{ steps.upload_transfer.outputs['artifact-id'] }}
     concurrency:
       group: openwrt-ci-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: false
@@ -346,6 +350,49 @@ jobs:
           echo "【编译 OpenWrt】执行正式固件编译、文件注入和输出整理。"
           bash scripts/build_openwrt.sh
 
+      - name: 准备独立制品清单
+        id: artifact_manifest
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          transfer_name="openwrt-transfer-${GITHUB_RUN_ID}"
+          echo "transfer_name=$transfer_name" >> "$GITHUB_OUTPUT"
+          if [ "${OUTPUT_ARTIFACT:-true}" != "true" ]; then
+            echo 'files={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo "【准备独立制品清单】未启用 GitHub artifact，跳过独立制品发布。"
+            exit 0
+          fi
+
+          mapfile -t files < <(find firmware-output -maxdepth 1 -type f -printf '%f\n' | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "【准备独立制品清单】firmware-output 中没有可发布文件。"
+            exit 1
+          fi
+
+          files_json="$({ printf '%s\n' "${files[@]}"; } | jq -R -s -c \
+            --arg slug "$TARGET_SLUG" --arg run "$GITHUB_RUN_NUMBER" '
+              split("\n")
+              | map(select(length > 0))
+              | map({
+                  file: .,
+                  name: ("openwrt-" + $slug + "-" + $run + "-" + (gsub("[^A-Za-z0-9._-]"; "-")))
+                })
+              | {include: .}
+            ')"
+          echo "files=$files_json" >> "$GITHUB_OUTPUT"
+          echo "【准备独立制品清单】将按文件发布 ${#files[@]} 个独立制品。"
+
+      - name: 暂存独立制品文件
+        id: upload_transfer
+        if: success() && env.OUTPUT_ARTIFACT == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-transfer-${{ github.run_id }}
+          path: firmware-output/
+          if-no-files-found: error
+          retention-days: 1
+
       - name: 记录缓存保存开始时间
         if: success()
         shell: bash
@@ -507,15 +554,6 @@ jobs:
           elapsed="$(($(date +%s) - start_epoch))"
           echo "【清理旧 ccache 缓存】步骤结果=${{ steps.save-ccache.outcome }}, 保留键=${saved_key}, 耗时=${elapsed}s"
 
-      - name: 上传固件制品
-        if: env.OUTPUT_ARTIFACT == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: openwrt-${{ env.TARGET_SLUG }}-${{ github.run_number }}
-          path: firmware-output/
-          if-no-files-found: error
-          retention-days: 14
-
       - name: 上传固件到 WebDAV
         if: env.OUTPUT_WEBDAV == 'true'
         id: upload_webdav
@@ -538,7 +576,54 @@ jobs:
           {
             echo "## WebDAV 上传失败"
             echo
-            echo "固件制品已由 GitHub Actions 上传。"
-            echo "请改用名为 openwrt-${TARGET_SLUG}-${GITHUB_RUN_NUMBER} 的制品作为回退。"
+            echo "固件文件会在后续步骤按文件分别上传为独立 GitHub Actions 制品。"
+            echo "工作流完成后，可按需下载对应的 openwrt-${TARGET_SLUG}-${GITHUB_RUN_NUMBER}-* 制品。"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning::【输出 WebDAV 回退提示】WebDAV 上传失败，GitHub Actions 制品可作为回退。"
+
+  publish-artifacts:
+    name: 上传独立制品 (${{ matrix.name }})
+    needs: build
+    if: needs.build.result == 'success' && needs.build.outputs.artifact_files != '' && needs.build.outputs.artifact_files != '{"include":[]}'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build.outputs.artifact_files) }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 下载待发布文件
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.transfer_artifact_name }}
+          path: firmware-output
+
+      - name: 上传独立制品
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: firmware-output/${{ matrix.file }}
+          if-no-files-found: error
+          retention-days: 14
+
+  cleanup-transfer-artifact:
+    name: 清理临时制品包
+    needs:
+      - build
+      - publish-artifacts
+    if: always() && needs.build.outputs.transfer_artifact_id != '' && needs['publish-artifacts'].result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+
+    steps:
+      - name: 删除临时制品包
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRANSFER_ARTIFACT_ID: ${{ needs.build.outputs.transfer_artifact_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "【清理临时制品包】删除仅用于跨 job 传输的 artifact：${TRANSFER_ARTIFACT_ID}"
+          gh api --method DELETE \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${TRANSFER_ARTIFACT_ID}"
